@@ -1,4 +1,6 @@
-import type { Reader } from './types'
+import type { Reader, Writer } from './types'
+
+const SMALL_BUFFER_SIZE = 64
 
 class SharedData {
 	constructor(public buffer: ArrayBuffer) {}
@@ -14,9 +16,11 @@ function mustNotNegative(n: number) {
 	}
 }
 
-export class Buff implements Reader {
-	static make(length: number, cap = length) {
-		if (length > cap) {
+export class Buff implements Reader, Writer {
+	static make(length: number, cap?: number) {
+		if (cap === undefined) {
+			cap = Math.max(length, SMALL_BUFFER_SIZE)
+		} else if (length > cap) {
 			throw new Error('length and capacity swapped')
 		}
 
@@ -30,7 +34,7 @@ export class Buff implements Reader {
 		thisArg?: unknown,
 	) {
 		const p = Uint8Array.from(arrayLike, mapfn, thisArg)
-		return new Buff(p)
+		return new Buff(p.buffer)
 	}
 
 	#b: SharedData
@@ -108,11 +112,6 @@ export class Buff implements Reader {
 		return new DataView(this.buffer, this.byteOffset, this.byteLength)
 	}
 
-	set(array: ArrayLike<number>, offset?: number): this {
-		this.data.set(array, offset)
-		return this
-	}
-
 	#mustRange(n: number) {
 		mustNotNegative(n)
 		if (n > this.#l) {
@@ -137,6 +136,38 @@ export class Buff implements Reader {
 		this.#mustRange(n)
 
 		this.#drain(Math.floor(n))
+		return this
+	}
+
+	#grow(n: number): number {
+		const m = this.#l
+		if (m <= this.capacity - n) {
+			this.#l += n
+			return m
+		}
+
+		const c = this.#b.byteLength
+		if (m <= c / 2 - n) {
+			new Uint8Array(this.#b.buffer).set(this.data)
+		} else {
+			let l = this.#l + n
+			if (l < 2 * c) {
+				l = 2 * c
+			}
+
+			const b = new Uint8Array(l)
+			b.set(this.data)
+			this.#b.buffer = b.buffer
+		}
+
+		this.#o = 0
+		this.#l += n
+		return m
+	}
+
+	grow(n: number): this {
+		mustNotNegative(n)
+		this.#grow(n)
 		return this
 	}
 
@@ -199,10 +230,16 @@ export class Buff implements Reader {
 
 		// |src| <= |p|
 		const src = this.data.subarray(0, p.length)
-		p.set(src)
+		p.data.set(src)
 
 		this.#drain(src.length)
 		return src.length
+	}
+
+	async write(p: Span): Promise<number | null> {
+		const m = this.#grow(p.length)
+		this.subarray(m, p.length).data.set(p.data)
+		return p.length
 	}
 }
 

@@ -5,7 +5,7 @@ export interface Reader {
 }
 
 export interface Writer {
-	close(): Promise<void>
+	write(p: Span): Promise<number | null>
 }
 
 export interface Closer {

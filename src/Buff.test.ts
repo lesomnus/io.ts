@@ -33,19 +33,53 @@ describe('Buff', () => {
 
 	describe('make', () => {
 		it('allocates a buffer with a given size', () => {
-			const s = io.Buff.make(4)
-			expect(s.length).toBe(4)
-			expect(s.capacity).toBe(4)
+			const b = io.Buff.make(4)
+			expect(b.length).toBe(4)
+			expect(b.capacity).greaterThanOrEqual(4)
 		})
 
 		it('allocates a buffer with a given capacity but only views a given length', () => {
-			const s = io.Buff.make(2, 4)
-			expect(s.length).toBe(2)
-			expect(s.capacity).toBe(4)
+			const b = io.Buff.make(2, 4)
+			expect(b.length).toBe(2)
+			expect(b.capacity).toBe(4)
 		})
 
 		it('throws if a given length is greater than a given capacity', () => {
 			expect(() => io.Buff.make(4, 2)).toThrow()
+		})
+	})
+
+	describe('grow', () => {
+		it('does not reallocate if possible', () => {
+			const d = io.iota(5, 1)
+			const b = io.Buff.from(d).truncate(3)
+			const buffer = b.buffer
+
+			b.grow(2)
+			expect(b.buffer).toBe(buffer)
+			expect(b.length).toBe(5)
+			expect([...b]).toEqual(d)
+		})
+
+		it('reallocates the buffer if necessary', () => {
+			const d = io.iota(4, 1)
+			const b = io.Buff.from(d)
+			const buffer = b.buffer
+
+			b.grow(2)
+			expect(b.buffer).not.toBe(buffer)
+			expect(b.length).toBe(4 + 2)
+		})
+
+		it('reuses the buffer if the buffer has capacity more than twice the required size', () => {
+			const d = io.iota(8, 1)
+			const b = io.Buff.from(d).drain(7)
+			const buffer = b.buffer
+
+			b.grow(3)
+			expect(b.buffer).toBe(buffer)
+			expect(b.length).toBe(8 - 7 + 3)
+			expect([...b.subarray(0, 8 - 7)]).toEqual(io.iota(1, 8))
 		})
 	})
 
@@ -110,9 +144,21 @@ describe('Buff', () => {
 		})
 	})
 
+	describe('write', () => {
+		it('grows as needed', async () => {
+			const d = io.iota(42, 1)
+			const b = io.Buff.make(0, 0)
+
+			const n = await b.write(io.Buff.from(d))
+			expect(n).toBe(d.length)
+			expect(b.capacity).greaterThan(0)
+			expect([...b]).toEqual(d)
+		})
+	})
+
 	testReader(async () => {
-		const d = new Uint8Array(io.iota(32))
-		const r = new io.Buff(d)
-		return [d, r] as const
+		const d = io.iota(42, 1)
+		const r = io.Buff.from(d)
+		return [new Uint8Array(d), r] as const
 	})
 })

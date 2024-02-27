@@ -3,7 +3,6 @@ import { describe, expect, it, test } from 'vitest'
 import io from '.'
 
 import { testReader } from './io.suite.test'
-import { BURGER as D } from './testdata'
 
 test('iota', () => {
 	expect(io.iota(0)).toEqual([])
@@ -14,51 +13,57 @@ test('iota', () => {
 
 describe('LimitedReader', () => {
 	it('limits amount of data to read from the given reader', async () => {
-		const b = io.Buff.from(D)
-		const l = new io.LimitedReader(b, D.length - 2)
-		const p = io.Buff.make(D.length)
+		const d = io.iota(42, 1)
+		const b = io.Buff.from(d)
+		const l = new io.LimitedReader(b, d.length - 2)
+		const p = io.Buff.make(d.length)
 
-		await expect(l.read(p)).resolves.toBe(D.length - 2)
-		expect([...p].slice(0, -2)).toEqual([...D.slice(0, -2)])
+		await expect(l.read(p)).resolves.toBe(d.length - 2)
+		expect([...p].slice(0, -2)).toEqual([...d.slice(0, -2)])
 	})
 
 	it('does not keep its own read position', async () => {
-		const b = io.Buff.from(D)
-		const l = new io.LimitedReader(b, D.length - 2)
+		const d = io.iota(42, 1)
+		const b = io.Buff.from(d)
+		const l = new io.LimitedReader(b, d.length - 2)
 		const p = io.Buff.make(2)
 
 		await expect(l.read(p)).resolves.toBe(2)
-		expect([...p]).toEqual([...D.slice(0, 2)])
+		expect([...p]).toEqual([...d.slice(0, 2)])
 
 		await expect(b.read(p)).resolves.toBe(2)
 		await expect(l.read(p)).resolves.toBe(2)
-		expect([...p]).toEqual([...D.slice(4, 6)])
+		expect([...p]).toEqual([...d.slice(4, 6)])
 	})
 
 	testReader(async () => {
-		const b = new io.Buff(D)
-		const l = new io.LimitedReader(b, D.length - 2)
-		return [D.slice(0, -2), l]
+		const d = io.iota(42, 1)
+		const b = io.Buff.from(d)
+		const l = new io.LimitedReader(b, d.length - 2)
+		return [Uint8Array.from(d.slice(0, -2)), l]
 	})
 })
 
 describe('readAtLeast', () => {
 	it('reads at least `min` byte from the reader', async () => {
-		const b = new io.Buff(D)
+		const d = io.iota(42, 1)
+		const b = io.Buff.from(d)
 		const s = io.Buff.make(4, 8)
 
 		await expect(io.readAtLeast(b, s, 2)).resolves.toBe(s.length)
 	})
 
 	it('stops read if the given reader returns null', async () => {
-		const b = new io.Buff(D.slice(0, 2))
+		const d = io.iota(2, 1)
+		const b = io.Buff.from(d)
 		const s = io.Buff.make(4, 8)
 
 		await expect(io.readAtLeast(b, s, 4)).resolves.toBe(2)
 	})
 
 	it('throws Error if given Span has shorter length than `min`', async () => {
-		const b = new io.Buff(D)
+		const d = io.iota(42, 1)
+		const b = io.Buff.from(d)
 		const s = io.Buff.make(4, 8)
 
 		await expect(() => io.readAtLeast(b, s, 6)).rejects.toThrow()
@@ -67,13 +72,26 @@ describe('readAtLeast', () => {
 
 describe('gulp', () => {
 	it('reads until the end', async () => {
-		const b = new io.Buff(D)
+		const d = io.iota(42, 1)
+		const b = io.Buff.from(d)
 		const s = io.Buff.make(4, 8)
 
 		let body: number[] = []
 		for await (const n of io.gulp(b, s)) {
 			body = [...body, ...s.subarray(0, n)]
 		}
-		expect(body).toEqual([...D])
+		expect(body).toEqual(d)
+	})
+})
+
+describe('copy', () => {
+	it('copies data from reader to writer', async () => {
+		const d = io.iota(42, 1)
+		const r = io.Buff.from(d)
+		const w = io.Buff.make(0)
+
+		const n = await io.copy(w, r)
+		expect(n).toBe(d.length)
+		expect([...w]).toEqual(d)
 	})
 })

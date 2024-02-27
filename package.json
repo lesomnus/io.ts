@@ -5,7 +5,6 @@
 	"main": "./dist/index.cjs",
 	"module": "./dist/index.js",
 	"typings": "./dist/index.d.ts",
-	"files": ["dist", "src"],
 	"scripts": {
 		"dev": "vite",
 		"build": "tsc && vite build",

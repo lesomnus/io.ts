@@ -1,5 +1,5 @@
 import { Buff, Span } from './Buff'
-import { Reader } from './types'
+import { Reader, Writer } from './types'
 
 export function iota(l: number, init = 0): number[] {
 	return Array(l)
@@ -43,7 +43,7 @@ export async function readAtLeast(
 	while (pos < min) {
 		const n = await r.read(p.subarray(pos))
 		if (n === null) {
-			return pos
+			return pos > 0 ? pos : null
 		}
 		pos += n
 	}
@@ -55,10 +55,7 @@ export async function readFull(r: Reader, p: Span): Promise<number | null> {
 	return readAtLeast(r, p, p.length)
 }
 
-export function gulp(
-	r: Reader,
-	p: Span = Buff.make(512),
-): AsyncIterable<number> {
+export function gulp(r: Reader, p: Span): AsyncIterable<number> {
 	return {
 		async *[Symbol.asyncIterator]() {
 			while (true) {
@@ -70,4 +67,31 @@ export function gulp(
 			}
 		},
 	}
+}
+
+export async function copy(
+	dst: Writer,
+	src: Reader,
+	buf?: Span,
+): Promise<number> {
+	if (buf === undefined) {
+		buf = Buff.make(32 * 1024)
+	}
+
+	// How to pass n on throw?
+	let n = 0
+	for await (const nr of gulp(src, buf)) {
+		const b = buf.subbuff(0, nr)
+		const nw = await dst.write(b)
+		if (nw === null || nw < 0) {
+			throw new Error('invalid write')
+		}
+
+		n += nw
+		if (nw < nr) {
+			throw new Error('short write')
+		}
+	}
+
+	return n
 }
