@@ -252,3 +252,15 @@ export type Span = Omit<
 	subarray(begin?: number, end?: number): Span
 	subbuff(begin: number, end?: number): Span
 }
+
+export function make(length: number, cap?: number): Span {
+	return Buff.make(length, cap) as Span
+}
+
+export function from(
+	arrayLike: Iterable<number>,
+	mapfn?: (v: number, k: number) => number,
+	thisArg?: unknown,
+): Span {
+	return Buff.from(arrayLike, mapfn, thisArg)
+}
