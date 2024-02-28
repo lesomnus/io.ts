@@ -8,7 +8,7 @@ Provides a Golang `io`-like I/O interface with a JS stream API wrapper.
 import io from '@lesomnus/io'
 
 io.fetch('http://worldtimeapi.org/api/timezone/Asia/Seoul').then(async r => {
-	const b = io.Buff.make(512)
+	const b = io.make(512)
 	const n = await io.readFull(r, b)
 	if (n === null) {
 		console.error(r)

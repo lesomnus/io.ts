@@ -1,10 +1,10 @@
 {
-	"$schema": "https://biomejs.dev/schemas/1.5.2/schema.json",
+	"$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
 	"organizeImports": {
 		"enabled": true
 	},
 	"files": {
-		"ignore": ["package-lock.json", "package.json"]
+		"ignore": ["coverage", "dist", "package-lock.json", "package.json"]
 	},
 	"formatter": {
 		"enabled": true,

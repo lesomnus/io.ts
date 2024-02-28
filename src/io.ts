@@ -1,4 +1,4 @@
-export { Buff, type Span } from './Buff'
+export * from './Buff'
 export * from './types'
 
 export * from './utils'
