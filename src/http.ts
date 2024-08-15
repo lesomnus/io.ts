@@ -1,6 +1,6 @@
-import { Span } from './Buff'
+import type { Span } from './Buff'
 import { fromReadableStream } from './stream'
-import { Closer, Reader, Slicer } from './types'
+import type { Closer, Reader, Slicer } from './types'
 
 class ClosedReader implements Reader, Closer {
 	read(): Promise<number | null> {
@@ -26,16 +26,12 @@ export function parseByteRanges(s: string) {
 			throw new SyntaxError('no "-" is found')
 		}
 
-		const r = [v.slice(0, p), v.slice(p + 1)]
-			.map(n => (n === '' ? undefined : n))
-			.map(n => (n === undefined ? n : parseInt(n)))
+		const r = [v.slice(0, p), v.slice(p + 1)].map(n => (n === '' ? undefined : n)).map(n => (n === undefined ? n : Number.parseInt(n)))
 		if (r.some(n => n !== undefined && Number.isNaN(n))) {
 			throw new SyntaxError('invalid number representation')
 		}
 		if (r.every(n => n === undefined)) {
-			throw new SyntaxError(
-				'at least one position must be specified on either side.',
-			)
+			throw new SyntaxError('at least one position must be specified on either side.')
 		}
 
 		rst.push(r as [number | undefined, number | undefined])
@@ -52,10 +48,7 @@ export class HttpReader implements Reader, Slicer, Closer {
 	constructor(req: Request, res: Response) {
 		this.#req = req
 		this.#res = res
-		this.#r =
-			res.body === null
-				? new ClosedReader()
-				: fromReadableStream(res.body)
+		this.#r = res.body === null ? new ClosedReader() : fromReadableStream(res.body)
 	}
 
 	get headers() {
@@ -126,10 +119,7 @@ export class HttpReader implements Reader, Slicer, Closer {
 			}
 		}
 
-		req.headers.set(
-			'Range',
-			`bytes=${start}-${end === undefined ? '' : end - 1}`,
-		)
+		req.headers.set('Range', `bytes=${start}-${end === undefined ? '' : end - 1}`)
 		return fetch_(req)
 	}
 
@@ -138,10 +128,7 @@ export class HttpReader implements Reader, Slicer, Closer {
 	}
 }
 
-async function fetch_(
-	input: URL | RequestInfo,
-	init?: RequestInit,
-): Promise<HttpReader> {
+async function fetch_(input: URL | RequestInfo, init?: RequestInit): Promise<HttpReader> {
 	const req = new Request(input, init)
 	const res = await fetch(req)
 	return new HttpReader(req, res)

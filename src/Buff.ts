@@ -16,7 +16,36 @@ function mustNotNegative(n: number) {
 	}
 }
 
+/**
+ * Variable sized buffer of bytes.
+ * It uses {@link ArrayBuffer} as an underlying buffer so it simply a view over the `ArrayBuffer` like {@link Uint8Array}.
+ *
+ * ```
+ *   offset   length
+ * |<------>|<------>|
+ * |........(........).....| <~ underlying buffer
+ *          |<------------>|
+ *              capacity
+ * ```
+ */
 export class Buff implements Reader, Writer {
+	/**
+	 * Creates a new `Buff`.
+	 *
+	 * @example
+	 * ```ts
+	 * const b = Buff.make(10)
+	 * console.log(b.length)   // 10
+	 * console.log(b.capacity) // 64
+	 * ```
+	 *
+	 * @param length Length of the buffer.
+	 * @param cap Capacity of the buffer. Defaults to the greater of `length` or `SMALL_BUFFER_SIZE`.
+	 * @throws An `Error` if `length > cap`.
+	 *
+	 * @see {@link Buff:constructor} to use your own underlying buffer.
+	 * @see {@link Buff.from} to create a new `Buff` from an array-like or iterable object.
+	 */
 	static make(length: number, cap?: number) {
 		if (cap === undefined) {
 			cap = Math.max(length, SMALL_BUFFER_SIZE)
@@ -28,45 +57,53 @@ export class Buff implements Reader, Writer {
 		return new Buff(p, 0, length)
 	}
 
-	static from(
-		arrayLike: Iterable<number>,
-		mapfn?: (v: number, k: number) => number,
-		thisArg?: unknown,
-	) {
+	/**
+	 * Creates a new `Buff` from an array-like of iterable object.
+	 *
+	 * @param arrayLike An iterable or array-like object to convert to a `Buff`.
+	 * @param mapfn A function to call on every element of the `Buff`.
+	 * If provided, every value to be added to the array is first passed through this function,
+	 * and `mapFn`'s return value is added to the `Buff` instead.
+	 * @param thisArg Value to use as this when executing `mapFn`.
+	 *
+	 * @see {@link Uint8Array.from} for details.
+	 */
+	static from(arrayLike: Iterable<number>, mapfn?: (v: number, k: number) => number, thisArg?: unknown) {
 		const p = Uint8Array.from(arrayLike, mapfn, thisArg)
 		return new Buff(p.buffer)
 	}
 
-	#b: SharedData
-	#o: number
-	#l: number
+	#b: SharedData // underlying buffer
+	#o: number // offset
+	#l: number // length
 
-	constructor(
-		buffer: ArrayBuffer | SharedData,
-		byteOffset = 0,
-		byteLength?: number,
-	) {
-		byteOffset = Math.floor(byteOffset)
-		if (byteOffset < 0) {
-			throw new RangeError(
-				`Start offset ${byteOffset} is outside the bounds of the buffer`,
-			)
+	/**
+	 * Creates new `Buff` with `buffer` as an underlying buffer, and use portion of the
+	 * buffer specified by optional `offset` and `length` arguments.
+	 * If `offset` and `length` is not given, all buffer is viewed.
+	 * Unlike {@link Uint8Array}, it does not track length of the underlying buffer.
+	 *
+	 * @param buffer An underlying buffer.
+	 * @param offset Offset for the buffer.
+	 * @param length Length of `Buff` to create.
+	 */
+	constructor(buffer: ArrayBuffer | SharedData, offset = 0, length?: number) {
+		offset = Math.floor(offset)
+		if (offset < 0) {
+			throw new RangeError(`start offset ${offset} is outside the bounds of the buffer`)
 		}
 
-		if (byteLength !== undefined) {
-			byteLength = Math.floor(byteLength)
-			const c = buffer.byteLength - byteOffset
-			if (c < byteLength) {
-				throw new RangeError(
-					`span bounds out of range ${byteLength} with capacity ${c}`,
-				)
+		if (length !== undefined) {
+			length = Math.floor(length)
+			const c = buffer.byteLength - offset
+			if (c < length) {
+				throw new RangeError(`span bounds out of range ${length} with capacity ${c}`)
 			}
 		}
 
-		this.#b =
-			buffer instanceof ArrayBuffer ? new SharedData(buffer) : buffer
-		this.#o = byteOffset
-		this.#l = byteLength ?? this.#b.byteLength - byteOffset
+		this.#b = buffer instanceof ArrayBuffer ? new SharedData(buffer) : buffer
+		this.#o = offset
+		this.#l = length ?? this.#b.byteLength - offset
 	}
 
 	get buffer(): ArrayBuffer {
@@ -78,6 +115,10 @@ export class Buff implements Reader, Writer {
 	}
 
 	get byteOffset() {
+		return this.#o
+	}
+
+	get offset() {
 		return this.#o
 	}
 
@@ -101,6 +142,7 @@ export class Buff implements Reader, Writer {
 		return this.data[Symbol.iterator]()
 	}
 
+	// TODO: it does not look safe
 	attach(b: ArrayBuffer) {
 		// if(!buffer.detached){
 		// 	throw new Error('...')
@@ -142,12 +184,20 @@ export class Buff implements Reader, Writer {
 	#grow(n: number): number {
 		const m = this.#l
 		if (m <= this.capacity - n) {
+			//      |<--l-->|-n->|
+			// |....(............)....|
 			this.#l += n
 			return m
 		}
 
 		const c = this.#b.byteLength
 		if (m <= c / 2 - n) {
+			// Reused the buffer if its capacity is more than twice the size of the required size.
+			//
+			//                    |<--l-->|-n->| <~ overflow
+			// |..................(.......)..|
+			// (............)................| <~ use same buffer
+			// |<--l-->|-n->|
 			new Uint8Array(this.#b.buffer).set(this.data)
 		} else {
 			let l = this.#l + n
@@ -213,9 +263,7 @@ export class Buff implements Reader, Writer {
 			throw new RangeError(`invalid Buff indices: ${begin} < ${end}`)
 		}
 		if (end > this.capacity) {
-			throw new RangeError(
-				`span bounds out of range ${end} with capacity ${this.capacity}`,
-			)
+			throw new RangeError(`span bounds out of range ${end} with capacity ${this.capacity}`)
 		}
 
 		const o = this.#o + begin
@@ -243,10 +291,7 @@ export class Buff implements Reader, Writer {
 	}
 }
 
-export type Span = Omit<
-	Buff,
-	'truncate' | 'drain' | 'next' | 'resize' | 'subarray' | 'subbuff' | 'read'
-> & {
+export type Span = Omit<Buff, 'truncate' | 'drain' | 'next' | 'resize' | 'subarray' | 'subbuff' | 'read'> & {
 	subarray(): Span
 	subarray(begin: number, end?: number): Span
 	subarray(begin?: number, end?: number): Span
@@ -257,10 +302,6 @@ export function make(length: number, cap?: number): Span {
 	return Buff.make(length, cap) as Span
 }
 
-export function from(
-	arrayLike: Iterable<number>,
-	mapfn?: (v: number, k: number) => number,
-	thisArg?: unknown,
-): Span {
+export function from(arrayLike: Iterable<number>, mapfn?: (v: number, k: number) => number, thisArg?: unknown): Span {
 	return Buff.from(arrayLike, mapfn, thisArg)
 }

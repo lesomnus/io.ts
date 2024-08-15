@@ -1,5 +1,5 @@
-import { Buff, Span } from './Buff'
-import { Closer, Reader } from './types'
+import { Buff, type Span } from './Buff'
+import type { Closer, Reader } from './types'
 
 class ByobReader implements Reader, Closer {
 	constructor(private r: ReadableStreamBYOBReader) {}
@@ -15,8 +15,9 @@ class ByobReader implements Reader, Closer {
 		return null
 	}
 
-	async close(): Promise<void> {
-		this.r.cancel('close')
+	close(): Promise<void> {
+		this.r.releaseLock()
+		return Promise.resolve()
 	}
 }
 
@@ -44,14 +45,13 @@ class DefaultReader implements Reader, Closer {
 		return this.#s.read(p)
 	}
 
-	async close(): Promise<void> {
-		this.r.cancel('close')
+	close(): Promise<void> {
+		this.r.releaseLock()
+		return Promise.resolve()
 	}
 }
 
-export function fromDefaultReader(
-	r: ReadableStreamDefaultReader<Uint8Array>,
-): Reader & Closer {
+export function fromDefaultReader(r: ReadableStreamDefaultReader<Uint8Array>): Reader & Closer {
 	return new DefaultReader(r)
 }
 
@@ -60,13 +60,7 @@ export function fromReadableStream(s: ReadableStream<Uint8Array>) {
 		const r = s.getReader({ mode: 'byob' })
 		return fromByobReader(r)
 	} catch (e) {
-		if (
-			!(
-				e instanceof Error &&
-				'code' in e &&
-				e.code === 'ERR_INVALID_ARG_VALUE'
-			)
-		) {
+		if (!(e instanceof Error && 'code' in e && e.code === 'ERR_INVALID_ARG_VALUE')) {
 			throw e
 		}
 

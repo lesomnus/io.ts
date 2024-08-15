@@ -1,11 +1,5 @@
 FROM ghcr.io/lesomnus/dev-node:20
 
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-	--mount=type=cache,target=/var/lib/apt,sharing=locked \
-	apt update \
-	&& apt-get install --no-install-recommends --yes \
-		clang-format
-
 
 
 USER hypnos

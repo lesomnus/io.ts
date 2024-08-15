@@ -1,0 +1,35 @@
+name: Test
+on:
+  pull_request:
+    paths:
+      - .github/**
+      - src/**
+      - "*.json"
+      - vite*.ts
+  push:
+    branches:
+      - main
+    paths:
+      - .github/**
+      - src/**
+      - "*.json"
+      - vite*.ts
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm clean-install
+      - run: npx biome ci .
+      - run: npm run test
+      - run: npm run build

@@ -53,20 +53,20 @@ describe('readAtLeast', () => {
 		await expect(io.readAtLeast(b, s, 2)).resolves.toBe(s.length)
 	})
 
-	it('stops read if the given reader returns null', async () => {
-		const d = io.iota(2, 1)
-		const b = io.Buff.from(d)
-		const s = io.Buff.make(4, 8)
-
-		await expect(io.readAtLeast(b, s, 4)).resolves.toBe(2)
-	})
-
 	it('throws Error if given Span has shorter length than `min`', async () => {
 		const d = io.iota(42, 1)
 		const b = io.Buff.from(d)
 		const s = io.Buff.make(4, 8)
 
 		await expect(() => io.readAtLeast(b, s, 6)).rejects.toThrow()
+	})
+
+	it('throws Error if reader is closed after reading fewer than `min`', async () => {
+		const d = io.iota(42, 1)
+		const b = io.Buff.from(d)
+		const s = io.Buff.make(50)
+
+		await expect(() => io.readAtLeast(b, s, s.length)).rejects.toThrow()
 	})
 })
 

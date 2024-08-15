@@ -1,16 +1,12 @@
 {
-	"name": "io",
+	"name": "lesomnus-io-ts",
 	"build": {
 		"dockerfile": "Dockerfile",
 		"context": "."
 	},
 	"customizations": {
 		"vscode": {
-			"extensions": [
-				"biomejs.biome",
-				"vitest.explorer",
-				"streetsidesoftware.code-spell-checker"
-			]
+			"extensions": ["biomejs.biome", "vitest.explorer", "streetsidesoftware.code-spell-checker"]
 		}
 	}
 }

@@ -1,5 +1,5 @@
-import http from 'node:http'
-import net from 'node:net'
+import type http from 'node:http'
+import type net from 'node:net'
 import path from 'node:path'
 
 import express from 'express'
@@ -80,17 +80,11 @@ describe('HttpReader', () => {
 		let server: http.Server
 		beforeAll(async () => {
 			app = express()
-			app.use(
-				express.static(path.join(import.meta.dirname, './testdata')),
-			)
+			app.use(express.static(path.join(import.meta.dirname, './testdata')))
 			server = await new Promise<http.Server>(resolve => {
 				const server = app.listen(() => resolve(server))
 			})
-			serverUrl = new URL(
-				`http://localhost:${
-					(server.address() as net.AddressInfo).port
-				}`,
-			)
+			serverUrl = new URL(`http://localhost:${(server.address() as net.AddressInfo).port}`)
 		})
 		afterAll(async () => {
 			await new Promise<void>(resolve => {

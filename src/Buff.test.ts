@@ -19,15 +19,11 @@ describe('Buff', () => {
 		})
 
 		it('throws RangeError if given offset is negative', () => {
-			expect(() => new io.Buff(new ArrayBuffer(0), -1)).toThrowError(
-				RangeError,
-			)
+			expect(() => new io.Buff(new ArrayBuffer(0), -1)).toThrowError(RangeError)
 		})
 
 		it('throws RangeError if given length is greater than the capacity', () => {
-			expect(() => new io.Buff(new ArrayBuffer(0), 2, 1)).toThrowError(
-				RangeError,
-			)
+			expect(() => new io.Buff(new ArrayBuffer(0), 2, 1)).toThrowError(RangeError)
 		})
 	})
 

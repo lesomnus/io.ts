@@ -1,5 +1,5 @@
-import { Buff, Span } from './Buff'
-import { Reader, Writer } from './types'
+import { Buff, type Span } from './Buff'
+import type { Reader, Writer } from './types'
 
 export function iota(l: number, init = 0): number[] {
 	return Array(l)
@@ -30,11 +30,7 @@ export class LimitedReader implements Reader {
 	}
 }
 
-export async function readAtLeast(
-	r: Reader,
-	p: Span,
-	min: number,
-): Promise<number | null> {
+export async function readAtLeast(r: Reader, p: Span, min: number): Promise<number | null> {
 	if (p.length < min) {
 		throw new Error('short buffer')
 	}
@@ -43,7 +39,7 @@ export async function readAtLeast(
 	while (pos < min) {
 		const n = await r.read(p.subarray(pos))
 		if (n === null) {
-			return pos > 0 ? pos : null
+			throw new Error('unexpected end of file')
 		}
 		pos += n
 	}
@@ -69,11 +65,7 @@ export function gulp(r: Reader, p: Span): AsyncIterable<number> {
 	}
 }
 
-export async function copy(
-	dst: Writer,
-	src: Reader,
-	buf?: Span,
-): Promise<number> {
+export async function copy(dst: Writer, src: Reader, buf?: Span): Promise<number> {
 	if (buf === undefined) {
 		buf = Buff.make(32 * 1024)
 	}
@@ -94,4 +86,10 @@ export async function copy(
 	}
 
 	return n
+}
+
+export const discard: Writer = {
+	write(p) {
+		return Promise.resolve(p.length)
+	},
 }
