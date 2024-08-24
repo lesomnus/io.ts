@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 
 import dts from 'vite-plugin-dts'
+import tsconfigPaths from 'vite-tsconfig-paths'
 import { defaultExclude, defineConfig } from 'vitest/config'
 
 export default defineConfig({
@@ -18,6 +19,7 @@ export default defineConfig({
 				return `export default new Uint8Array([${new Uint8Array(data)}])`
 			},
 		},
+		tsconfigPaths(),
 		dts({
 			exclude: ['vite.config.ts', '**/*.test.ts', 'src/testdata'],
 		}),
@@ -27,6 +29,8 @@ export default defineConfig({
 		lib: {
 			entry: {
 				main: resolve(import.meta.dirname, 'src/index.ts'),
+				path: resolve(import.meta.dirname, 'src/path/index.ts'),
+				fs: resolve(import.meta.dirname, 'src/fs/index.ts'),
 			},
 			formats: ['es', 'cjs'],
 		},

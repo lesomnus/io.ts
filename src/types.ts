@@ -8,7 +8,7 @@ export interface Writer {
 	write(p: Span): Promise<number | null>
 }
 
-export interface Closer {
+export interface Closer extends AsyncDisposable {
 	close(): Promise<void>
 }
 

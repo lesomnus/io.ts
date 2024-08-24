@@ -271,9 +271,9 @@ export class Buff implements Reader, Writer {
 		return new Buff(this.#b, o, l)
 	}
 
-	async read(p: Span): Promise<number | null> {
+	read(p: Span): Promise<number | null> {
 		if (this.length === 0) {
-			return null
+			return Promise.resolve(null)
 		}
 
 		// |src| <= |p|
@@ -281,13 +281,13 @@ export class Buff implements Reader, Writer {
 		p.data.set(src)
 
 		this.#drain(src.length)
-		return src.length
+		return Promise.resolve(src.length)
 	}
 
-	async write(p: Span): Promise<number | null> {
+	write(p: Span): Promise<number | null> {
 		const m = this.#grow(p.length)
 		this.subarray(m, p.length).data.set(p.data)
-		return p.length
+		return Promise.resolve(p.length)
 	}
 }
 

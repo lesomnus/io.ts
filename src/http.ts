@@ -10,6 +10,10 @@ class ClosedReader implements Reader, Closer {
 	close(): Promise<void> {
 		return Promise.resolve()
 	}
+
+	[Symbol.asyncDispose](): PromiseLike<void> {
+		return this.close()
+	}
 }
 
 export function parseByteRanges(s: string) {
@@ -49,6 +53,9 @@ export class HttpReader implements Reader, Slicer, Closer {
 		this.#req = req
 		this.#res = res
 		this.#r = res.body === null ? new ClosedReader() : fromReadableStream(res.body)
+	}
+	[Symbol.asyncDispose](): PromiseLike<void> {
+		throw new Error('Method not implemented.')
 	}
 
 	get headers() {

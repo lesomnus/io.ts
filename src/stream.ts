@@ -3,6 +3,9 @@ import type { Closer, Reader } from './types'
 
 class ByobReader implements Reader, Closer {
 	constructor(private r: ReadableStreamBYOBReader) {}
+	[Symbol.asyncDispose](): PromiseLike<void> {
+		throw new Error('Method not implemented.')
+	}
 
 	async read(p: Span): Promise<number | null> {
 		const { value, done } = await this.r.read(p.data)
@@ -48,6 +51,10 @@ class DefaultReader implements Reader, Closer {
 	close(): Promise<void> {
 		this.r.releaseLock()
 		return Promise.resolve()
+	}
+
+	[Symbol.asyncDispose](): PromiseLike<void> {
+		return this.close()
 	}
 }
 
