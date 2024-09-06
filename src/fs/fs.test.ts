@@ -1,117 +1,130 @@
 import io from '~/.'
+import fs from '.'
 
-import type { FileMode } from './constants'
-import * as errs from './errors'
-import { MemFs } from './memfs'
-import type { Fs } from './types'
-
-describe.each<[string, () => Fs]>([
+type TestCase = [string, () => Promise<fs.Fs>]
+const testCases: TestCase[] = [
 	//
-	['memfs', () => new MemFs()],
-])('%s', (_, make) => {
+	['memfs', () => Promise.resolve(new fs.MemFs())],
+]
+if (expect.getState().environment === 'browser') {
+	testCases.push([
+		'idbfs',
+		async () => {
+			const name = Math.random().toString(36).substring(2, 12)
+			const fsys = await fs.newIdbFs(name)
+			onTestFinished(() => fsys.delete())
+			return fsys
+		},
+	])
+}
+
+// TODO: how to make T to be variadic within Promise<T>?
+async function using<T extends AsyncDisposable, U>(vs: [...Promise<T>[]], f: (...vs: [...T[]]) => Promise<U>) {
+	const ws = await Promise.all(vs)
+	return f(...ws).finally(async () => {
+		ws.reverse()
+		for (const w of ws) {
+			await w[Symbol.asyncDispose]()
+		}
+	})
+}
+
+describe.each(testCases)('%s', (_, make) => {
 	test('create', async () => {
-		const fs = make()
+		const fsys = await make()
 
 		const data = [0x12, 0x34]
-		{
-			await using f = await fs.create('foo')
-			await f.write(io.from(data))
-		}
+		await using([fsys.create('foo')], async f => f.write(io.from(data)))
 
-		await using f = await fs.open('foo')
-		const b = await io.readAll(f)
-		expect([...b]).to.eql([...data])
+		await using([fsys.open('foo')], async f => {
+			const b = await io.readAll(f)
+			expect([...b]).to.eql([...data])
+		})
 	})
 	test('mkdir', async () => {
-		const fs = make()
+		const fsys = await make()
 
-		const data = [0x12, 0x34]
-		{
-			await fs.mkdir('foo', 0o750 as FileMode)
-			await using f = await fs.create('foo/bar')
-			await f.write(io.from(data))
-		}
+		await fsys.mkdir('foo', 0o750 as fs.FileMode)
 
-		await using f = await fs.open('foo/bar')
-		const b = await io.readAll(f)
-		expect([...b]).to.eql([...data])
+		const info = await fsys.stat('foo')
+		expect(info.isDir).to.be.true
 	})
 	test('mkdirAll', async () => {
-		const fs = make()
+		const fsys = await make()
 
-		const mode = 0o750 as FileMode
-		await fs.mkdir('foo', mode)
-		await fs.mkdirAll('foo/bar/baz', mode)
+		const mode = 0o750 as fs.FileMode
+		await fsys.mkdir('foo', mode)
+		await fsys.mkdirAll('foo/bar/baz', mode)
 
-		const info = await fs.stat('foo/bar/baz')
+		const info = await fsys.stat('foo/bar/baz')
 		expect(info.isDir).to.be.true
 	})
-	test('open a file and read from start', async () => {
-		const fs = make()
+	test('file is opened with the cursor at the beginning of the file', async () => {
+		const fs = await make()
 
 		const data = [0x12, 0x34]
-		{
-			await using f = await fs.create('foo')
-			await f.write(io.from(data))
-		}
+		await using([fs.create('foo')], f => f.write(io.from(data)))
 
-		{
-			await using f = await fs.open('foo')
+		await using([fs.open('foo')], async f => {
 			const b = await io.readAll(f)
 			expect([...b]).to.eql([...data])
-		}
-		{
-			await using f = await fs.open('foo')
+		})
+		await using([fs.open('foo')], async f => {
 			const b = await io.readAll(f)
 			expect([...b]).to.eql([...data])
-		}
+		})
 	})
-	test('open files to read simultaneously', async () => {
-		const fs = make()
+	test('file is opened with its own cursor', async () => {
+		const fsys = await make()
 
 		const data = [0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc]
-		{
-			await using f = await fs.create('foo')
-			await f.write(io.from(data))
-		}
+		await using([fsys.create('foo')], async f => f.write(io.from(data)))
 
-		await using f1 = await fs.open('foo')
-		await using f2 = await fs.open('foo')
+		await using(
+			[
+				fsys.open('foo'), //
+				fsys.open('foo'),
+			],
+			async (f1, f2) => {
+				const b1 = io.make(3)
+				const b2 = io.make(2)
 
-		const b1 = io.make(3)
-		const b2 = io.make(2)
+				await io.readFull(f1, b1)
+				await io.readFull(f2, b2)
+				expect([...b1]).to.eql([...data].slice(0, 3))
+				expect([...b2]).to.eql([...data].slice(0, 2))
 
-		await io.readFull(f1, b1)
-		await io.readFull(f2, b2)
-		expect([...b1]).to.eql([...data].slice(0, 3))
-		expect([...b2]).to.eql([...data].slice(0, 2))
-
-		await io.readFull(f1, b1)
-		await io.readFull(f2, b2)
-		expect([...b1]).to.eql([...data].slice(3, 6))
-		expect([...b2]).to.eql([...data].slice(2, 4))
+				await io.readFull(f1, b1)
+				await io.readFull(f2, b2)
+				expect([...b1]).to.eql([...data].slice(3, 6))
+				expect([...b2]).to.eql([...data].slice(2, 4))
+			},
+		)
 	})
 	test('open a file that does not exist', async () => {
-		const fs = make()
+		const fsys = await make()
 
-		const op = () => fs.open('not-exists')
-		await expect(op).rejects.toThrow(errs.ErrNotExist)
+		const op = () => fsys.open('not-exists')
+		await expect(op).rejects.toThrow(fs.ErrNotExist)
 	})
 	test('open a directory', async () => {
-		const fs = make()
+		const fsys = await make()
 
-		await fs.mkdir('foo', 0o750 as FileMode)
+		await fsys.mkdir('foo')
 
-		await using f = await fs.open('foo')
-		await expect(() => f.read(io.make(2))).rejects.toThrow(errs.ErrDirectory)
-
-		const info = await f.stat()
-		expect(info.isDir).to.be.true
+		await using([fsys.open('foo')], async f => {
+			const info = await f.stat()
+			expect(info.isDir).to.be.true
+		})
+		await using([fsys.open('foo')], async f => {
+			const op = () => f.read(io.make(2))
+			await expect(op).rejects.toThrow(fs.ErrDirectory)
+		})
 	})
 	test('readDir a directory', async () => {
-		const fs = make()
+		const fs = await make()
 
-		const mode = 0o750 as FileMode
+		const mode = 0o750 as fs.FileMode
 		await fs.mkdirAll('foo/bar', mode)
 		await fs.mkdirAll('foo/baz', mode)
 
@@ -123,146 +136,121 @@ describe.each<[string, () => Fs]>([
 		expect(names).to.contain('baz')
 	})
 	test('rename a regular file to a new name', async () => {
-		const fs = make()
+		const fsys = await make()
 
 		const data = [0x12, 0x34]
-		{
-			await using f = await fs.create('foo')
-			await f.write(io.from(data))
-		}
+		await using([fsys.create('foo')], f => f.write(io.from(data)))
 
-		await fs.rename('foo', 'bar')
-		expect(() => fs.stat('foo')).rejects.toThrow(errs.ErrNotExist)
+		await fsys.rename('foo', 'bar')
+		await expect(() => fsys.stat('foo')).rejects.toThrow(fs.ErrNotExist)
 
-		await using f = await fs.open('bar')
-		const b = await io.readAll(f)
-		expect([...b]).to.eql([...data])
+		await using([fsys.open('bar')], async f => {
+			const b = await io.readAll(f)
+			expect([...b]).to.eql([...data])
+		})
 	})
 	test('rename a regular file to an existing name that is a regular file', async () => {
-		const fs = make()
+		const fsys = await make()
 
 		const data = [0x12, 0x34]
-		{
-			await using f = await fs.create('foo')
-			await f.write(io.from(data))
-		}
-		{
-			await using f = await fs.create('bar')
-			await f.write(io.from([0x56, 0x78]))
-		}
+		await using([fsys.create('foo')], f => f.write(io.from(data)))
+		await using([fsys.create('bar')], f => f.write(io.from([0x56, 0x78])))
 
-		await fs.rename('foo', 'bar')
-		expect(() => fs.stat('foo')).rejects.toThrow(errs.ErrNotExist)
+		await fsys.rename('foo', 'bar')
+		await expect(() => fsys.stat('foo')).rejects.toThrow(fs.ErrNotExist)
 
-		await using f = await fs.open('bar')
-		const b = await io.readAll(f)
-		expect([...b]).to.eql([...data])
+		await using([fsys.open('bar')], async f => {
+			const b = await io.readAll(f)
+			expect([...b]).to.eql([...data])
+		})
 	})
 	test('rename a regular file to an existing name that is a directory', async () => {
-		const fs = make()
+		const fsys = await make()
 
 		const data = [0x12, 0x34]
-		{
-			await using f = await fs.create('foo')
-			await f.write(io.from(data))
-			await fs.mkdir('bar', 0o750 as FileMode)
-		}
+		await using([fsys.create('foo')], f => f.write(io.from(data)))
+		await fsys.mkdir('bar')
 
-		const op = () => fs.rename('foo', 'bar')
-		expect(op).rejects.toThrow(errs.ErrDirectory)
+		const op = () => fsys.rename('foo', 'bar')
+		await expect(op).rejects.toThrow(fs.ErrDirectory)
 	})
 	test('rename a directory to a new name', async () => {
-		const fs = make()
+		const fsys = await make()
 
-		await fs.mkdir('foo', 0o750 as FileMode)
+		await fsys.mkdir('foo')
 
-		await fs.rename('foo', 'bar')
-		expect(() => fs.stat('foo')).rejects.toThrow(errs.ErrNotExist)
+		await fsys.rename('foo', 'bar')
+		await expect(() => fsys.stat('foo')).rejects.toThrow(fs.ErrNotExist)
 
-		const info = await fs.stat('bar')
+		const info = await fsys.stat('bar')
 		expect(info.isDir).to.be.true
 	})
 	test('rename a directory to an existing name that is a regular file', async () => {
-		const fs = make()
+		const fsys = await make()
 
-		await fs.mkdir('foo', 0o750 as FileMode)
-		{
-			await using f = await fs.create('bar')
-			await f.write(io.from([0x56, 0x78]))
-		}
+		await fsys.mkdir('foo')
+		await using([fsys.create('bar')], f => f.write(io.from([0x56, 0x78])))
 
-		const op = () => fs.rename('foo', 'bar')
-		expect(op).rejects.toThrow(errs.ErrNotDirectory)
+		const op = () => fsys.rename('foo', 'bar')
+		await expect(op).rejects.toThrow(fs.ErrNotDirectory)
 	})
 	test('rename a directory to an existing name that is an empty directory', async () => {
-		const fs = make()
+		const fsys = await make()
 
 		const data = [0x12, 0x34]
-		{
-			await fs.mkdir('foo', 0o750 as FileMode)
-			await using f = await fs.create('foo/baz')
-			await f.write(io.from(data))
+		await fsys.mkdir('foo')
+		await fsys.mkdir('bar')
+		await using([fsys.create('foo/baz')], f => f.write(io.from(data)))
 
-			await fs.mkdir('bar', 0o750 as FileMode)
-		}
+		await fsys.rename('foo', 'bar')
+		await expect(() => fsys.stat('foo')).rejects.toThrow(fs.ErrNotExist)
 
-		await fs.rename('foo', 'bar')
-		expect(() => fs.stat('foo')).rejects.toThrow(errs.ErrNotExist)
-
-		await using f = await fs.open('bar/baz')
-		const b = await io.readAll(f)
-		expect([...b]).to.eql([...data])
+		await using([fsys.open('bar/baz')], async f => {
+			const b = await io.readAll(f)
+			expect([...b]).to.eql([...data])
+		})
 	})
 	test('rename a directory to an existing name that is a non-empty directory', async () => {
-		const fs = make()
+		const fsys = await make()
 
 		const data = [0x12, 0x34]
-		{
-			await fs.mkdir('foo', 0o750 as FileMode)
-			await using f = await fs.create('foo/baz')
-			await f.write(io.from(data))
-		}
-		{
-			await fs.mkdir('bar', 0o750 as FileMode)
-			await using f = await fs.create('bar/qux')
-			await f.write(io.from(data))
-		}
+		await fsys.mkdir('foo')
+		await fsys.mkdir('bar')
+		await using([fsys.create('foo/baz')], f => f.write(io.from(data)))
+		await using([fsys.create('bar/qux')], f => f.write(io.from(data)))
 
-		const op = () => fs.rename('foo', 'bar')
-		expect(op).rejects.toThrow(new errs.ErrDirectoryNotEmpty())
+		const op = () => fsys.rename('foo', 'bar')
+		await expect(op).rejects.toThrow(fs.ErrDirectoryNotEmpty)
 	})
 	test('remove a regular file', async () => {
-		const fs = make()
+		const fsys = await make()
 
 		const data = [0x12, 0x34]
-		{
-			await using f = await fs.create('foo')
-			await f.write(io.from(data))
-		}
+		await using([fsys.create('foo')], f => f.write(io.from(data)))
 
-		await fs.remove('foo')
-		expect(() => fs.stat('foo')).rejects.toThrow(errs.ErrNotExist)
+		await fsys.remove('foo')
+		await expect(() => fsys.stat('foo')).rejects.toThrow(fs.ErrNotExist)
 	})
 	test('remove an empty directory', async () => {
-		const fs = make()
+		const fsys = await make()
 
-		await fs.mkdir('foo', 0o750 as FileMode)
+		await fsys.mkdir('foo')
 
-		await fs.remove('foo')
-		expect(() => fs.stat('foo')).rejects.toThrow(errs.ErrNotExist)
+		await fsys.remove('foo')
+		await expect(() => fsys.stat('foo')).rejects.toThrow(fs.ErrNotExist)
 	})
 	test('remove a non-empty directory', async () => {
-		const fs = make()
+		const fsys = await make()
 
-		await fs.mkdirAll('foo/bar', 0o750 as FileMode)
+		await fsys.mkdirAll('foo/bar')
 
-		const op = () => fs.remove('foo')
-		expect(op).rejects.toThrow(errs.ErrDirectoryNotEmpty)
+		const op = () => fsys.remove('foo')
+		await expect(op).rejects.toThrow(fs.ErrDirectoryNotEmpty)
 	})
 	test('remove a file that does not exist', async () => {
-		const fs = make()
+		const fsys = await make()
 
-		const op = () => fs.remove('not-exists')
-		await expect(op).rejects.toThrow(errs.ErrNotExist)
+		const op = () => fsys.remove('not-exists')
+		await expect(op).rejects.toThrow(fs.ErrNotExist)
 	})
 })

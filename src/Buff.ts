@@ -181,13 +181,13 @@ export class Buff implements Reader, Writer {
 		return this
 	}
 
-	#grow(n: number): number {
+	#grow(n: number) {
 		const m = this.#l
 		if (m <= this.capacity - n) {
 			//      |<--l-->|-n->|
 			// |....(............)....|
 			this.#l += n
-			return m
+			return
 		}
 
 		const c = this.#b.byteLength
@@ -212,7 +212,7 @@ export class Buff implements Reader, Writer {
 
 		this.#o = 0
 		this.#l += n
-		return m
+		return
 	}
 
 	grow(n: number): this {
@@ -285,9 +285,11 @@ export class Buff implements Reader, Writer {
 	}
 
 	write(p: Span): Promise<number | null> {
-		const m = this.#grow(p.length)
-		this.subarray(m, p.length).data.set(p.data)
-		return Promise.resolve(p.length)
+		const m = this.#l
+		const n = p.length
+		this.#grow(n)
+		this.subarray(m).data.set(p.data)
+		return Promise.resolve(n)
 	}
 }
 

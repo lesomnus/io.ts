@@ -124,46 +124,92 @@ test.each([
 
 test.each([
 	[
-		'a/b/c',
+		'foo/bar/baz',
 		[
-			['a', 'b/c'],
-			['b', 'c'],
-			['c', ''],
+			['foo', 'bar/baz'],
+			['bar', 'baz'],
+			['baz', ''],
 		],
 	],
 	[
-		'/a/b/c',
+		'/foo/bar/baz',
 		[
-			['a', 'b/c'],
-			['b', 'c'],
-			['c', ''],
+			['foo', 'bar/baz'],
+			['bar', 'baz'],
+			['baz', ''],
 		],
 	],
 	[
-		'a/b/c/',
+		'foo/bar/baz/',
 		[
-			['a', 'b/c/'],
-			['b', 'c/'],
-			['c', ''],
+			['foo', 'bar/baz/'],
+			['bar', 'baz/'],
+			['baz', ''],
 		],
 	],
 	[
-		'/a/b/c/',
+		'/foo/bar/baz/',
 		[
-			['a', 'b/c/'],
-			['b', 'c/'],
-			['c', ''],
+			['foo', 'bar/baz/'],
+			['bar', 'baz/'],
+			['baz', ''],
 		],
 	],
 	[
-		'a//b',
+		'foo//bar',
 		[
-			['a', '/b'],
-			['', 'b'],
-			['b', ''],
+			['foo', '/bar'],
+			['', 'bar'],
+			['bar', ''],
 		],
 	],
 ])('entries(%s)=>%j', (given, expected) => {
 	const actual = path.entries(given)
+	expect([...actual]).to.eql(expected)
+})
+
+test.each([
+	[
+		'foo/bar/baz',
+		[
+			['baz', ''],
+			['bar', 'baz'],
+			['foo', 'bar/baz'],
+		],
+	],
+	[
+		'/foo/bar/baz',
+		[
+			['baz', ''],
+			['bar', 'baz'],
+			['foo', 'bar/baz'],
+		],
+	],
+	[
+		'foo/bar/baz/',
+		[
+			['baz', ''],
+			['bar', 'baz/'],
+			['foo', 'bar/baz/'],
+		],
+	],
+	[
+		'/foo/bar/baz/',
+		[
+			['baz', ''],
+			['bar', 'baz/'],
+			['foo', 'bar/baz/'],
+		],
+	],
+	[
+		'foo//bar',
+		[
+			['bar', ''],
+			['', 'bar'],
+			['foo', '/bar'],
+		],
+	],
+])('entriesReverse(%s)=>%j', (given, expected) => {
+	const actual = path.entriesReverse(given)
 	expect([...actual]).to.eql(expected)
 })

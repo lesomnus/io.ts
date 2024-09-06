@@ -95,10 +95,11 @@ export function dir(path: string): string {
 }
 
 export function* entries(path: string): Iterable<[string, string]> {
-	if (path.length === 0) return
+	const l = path.length
+	if (l === 0) return
 
 	let pos = path[0] === '/' ? 1 : 0
-	while (pos < path.length) {
+	while (pos < l) {
 		const next = path.indexOf('/', pos)
 		if (next < 0) {
 			return yield [path.slice(pos), '']
@@ -108,5 +109,25 @@ export function* entries(path: string): Iterable<[string, string]> {
 		const rest = path.slice(next + 1)
 		yield [curr, rest]
 		pos = next + 1
+	}
+}
+
+export function* entriesReverse(path: string): Iterable<[string, string]> {
+	const l = path.length
+	if (l === 0) return
+
+	const begin = path[0] === '/' ? 1 : 0
+	let pos = l - (path[l - 1] === '/' ? 2 : 1)
+	while (pos >= 0) {
+		const next = path.lastIndexOf('/', pos)
+		const end = pos + 1
+		if (next < 0) {
+			return yield [path.slice(begin, end), path.slice(end + 1)]
+		}
+
+		const curr = path.slice(next + 1, end)
+		const rest = path.slice(end + 1)
+		yield [curr, rest]
+		pos = next - 1
 	}
 }

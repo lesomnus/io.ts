@@ -1,50 +1,232 @@
 import io from '~/.'
-import type { Span } from '~/Buff'
-import path, { entries } from '~/path'
+import path from '~/path'
 
+import { Block } from './block'
 import { type FileMode, OpenFlag } from './constants'
 import * as errs from './errors'
 import type { DirEntry, File, FileInfo, Fs, ReadOnlyFile } from './types'
 
-class Block extends io.Buff {
+class MemNode {
 	mtime = new Date()
+
+	constructor(public mode: FileMode) {}
+
+	get length(): number {
+		return 0
+	}
+}
+
+class MemFileNode extends MemNode {
+	mtime = new Date()
+	blocks: Uint8Array[] = [new Uint8Array()]
+
 	cntReaders = 0
 	cntWriters = 0
 
-	constructor() {
-		super(new Uint8Array(512), 0, 0)
-	}
+	override get length(): number {
+		switch (this.blocks.length) {
+			case 0:
+				return 0
 
-	override write(p: Span): Promise<number | null> {
-		this.mtime = new Date()
-		return super.write(p)
+			case 1:
+				return this.blocks[0].length
+
+			default: {
+				const n = this.blocks.length - 1
+				return Block.Size * n + this.blocks[n].length
+			}
+		}
 	}
 }
 
 abstract class MemFileBase implements File {
+	#op: Promise<void> = Promise.resolve()
+
 	protected closed = false
+	protected b: Promise<Block>
+	protected curr: number
 
 	constructor(
-		protected block: Block,
-		public name: string,
-	) {}
+		protected node: MemFileNode,
+		protected name: string,
+		atEnd: boolean,
+	) {
+		this.curr = atEnd ? Math.min(node.blocks.length - 1, 0) : 0
+		let b = Promise.resolve(new Block(node.blocks[this.curr]))
+		if (atEnd) {
+			b = b.then(async b => {
+				await b.seek(0, io.Seek.End)
+				return b
+			})
+		}
+		this.b = b
+	}
+
+	protected advanceBlock(): Block | undefined {
+		const next = this.curr + 1
+		if (next >= this.node.blocks.length) {
+			return undefined
+		}
+
+		const b = new Block(this.node.blocks[next])
+		this.b = Promise.resolve(b)
+		this.curr = next
+		return b
+	}
+
+	protected do<T>(f: () => Promise<T>): Promise<T> {
+		const op = this.#op.then(f)
+		this.#op = op.catch(() => {}) as Promise<void>
+		return op
+	}
 
 	stat(): Promise<FileInfo> {
 		return Promise.resolve({
 			name: this.name,
-			size: this.block.length,
-			modTime: this.block.mtime,
+			size: this.node.length,
+			modTime: this.node.mtime,
 			isDir: false,
 		})
 	}
 
-	abstract read(p: Span): Promise<number | null>
+	async #read(p: io.Span): Promise<number | null> {
+		let o = 0
+		while (o < p.length) {
+			const b = await this.b
+			if (b.available === 0) {
+				break
+			}
 
-	abstract write(p: Span): Promise<number | null>
+			const n = await b.read(p.subbuff(o))
+			if (n === null) {
+				throw new Error('invalid state: content of block must be available')
+			}
+
+			o += n
+			if (b.available === 0) {
+				this.advanceBlock()
+			}
+		}
+
+		if (o === 0) {
+			return null
+		}
+		return o
+	}
+
+	read(p: io.Span): Promise<number | null> {
+		if (this.closed) return Promise.resolve(null)
+		return this.do(() => this.#read(p))
+	}
+
+	async #write(p: io.Span): Promise<number | null> {
+		let o = 0
+
+		let b = await this.b
+		let c = b.capacity
+		while (true) {
+			if (o >= p.length) {
+				if (b.capacity !== c) {
+					// block is grown so the underlying buffer is changed.
+					this.node.blocks[this.curr] = b.data
+				}
+				return o
+			}
+
+			const n = await b.write(p.subbuff(o))
+			if (n === null) {
+				const next = this.advanceBlock()
+				if (!next) {
+					break
+				}
+
+				b = next
+				c = next.capacity
+				continue
+			}
+
+			o += n
+		}
+
+		const needGrow = o < p.length
+		while (needGrow) {
+			const end = o + Block.Size
+			const d = p.subbuff(o, end).data
+			const b = new Uint8Array(d.length)
+
+			b.set(d)
+			this.node.blocks.push(b)
+
+			o += d.length
+		}
+		if (needGrow) {
+			const b = this.node.blocks[this.node.blocks.length - 1]
+			this.b = Promise.resolve(new Block(b))
+		}
+
+		return o
+	}
+
+	write(p: io.Span): Promise<number | null> {
+		if (this.closed) return Promise.resolve(null)
+		return this.do(() => this.#write(p))
+	}
+
+	async #seek(offset: number, whence?: io.Seek): Promise<number> {
+		const end = this.node.length
+
+		let i: number
+		switch (whence) {
+			case io.Seek.Start:
+				i = 0
+				break
+
+			case io.Seek.Current: {
+				const b = await this.b
+				i = Block.Size * this.curr + b.length
+				break
+			}
+
+			case io.Seek.End:
+				i = end
+				break
+
+			default:
+				throw new Error('unknown whence')
+		}
+
+		const o = i + offset
+		if (!(0 <= o && o <= end)) {
+			throw new Error('out of range')
+		}
+
+		const bi = o % Block.Size
+		const bo = Math.floor(o / Block.Size)
+		const d = this.curr - bi
+		if (d !== 0) {
+			this.curr = bi
+			this.b = Promise.resolve(new Block(this.node.blocks[this.curr]))
+		}
+
+		const b = await this.b
+		await b.seek(bo, io.Seek.Start)
+		return o
+	}
+
+	seek(offset: number, whence?: io.Seek): Promise<number> {
+		if (this.closed) Promise.reject(new Error('closed'))
+		return this.do(() => this.#seek(offset, whence))
+	}
+
+	protected abstract onClose(): Promise<void>
 
 	close(): Promise<void> {
+		if (this.closed) {
+			return this.#op
+		}
+
 		this.closed = true
-		return Promise.resolve()
+		return this.do(() => this.onClose())
 	}
 
 	[Symbol.asyncDispose](): PromiseLike<void> {
@@ -52,78 +234,50 @@ abstract class MemFileBase implements File {
 	}
 }
 
-class ReadOnlyMemFile extends MemFileBase implements File {
-	private buff: io.Buff
-
-	constructor(block: Block, name: string) {
-		if (block.cntWriters > 0) {
-			throw new errs.ErrBusy()
-		}
-		super(block, name)
-		block.cntReaders++
-		this.buff = block.subbuff(0)
+class ReadOnlyMemFile extends MemFileBase {
+	override write(p: io.Span): Promise<number | null> {
+		return Promise.reject(new Error('read only file'))
 	}
 
-	read(p: Span): Promise<number | null> {
-		if (this.closed) return Promise.resolve(null)
-		return this.buff.read(p)
-	}
-
-	write(p: Span): Promise<number | null> {
-		if (this.closed) return Promise.resolve(null)
-		return Promise.reject(new errs.ErrReadOnly())
-	}
-
-	close(): Promise<void> {
-		this.closed = true
-		this.block.cntReaders--
+	protected override onClose(): Promise<void> {
+		this.node.cntReaders--
 		return Promise.resolve()
 	}
 }
 
-class MemFile extends MemFileBase implements File {
-	constructor(block: Block, name: string) {
-		if (block.cntReaders > 0) {
-			throw new errs.ErrBusy()
-		}
-		super(block, name)
-		block.cntReaders++
-		block.cntWriters++
-	}
-
-	read(p: Span): Promise<number | null> {
-		if (this.closed) return Promise.resolve(null)
-		return this.block.read(p)
-	}
-
-	write(p: Span): Promise<number | null> {
-		if (this.closed) return Promise.resolve(null)
-		return this.block.write(p)
-	}
-
-	close(): Promise<void> {
-		this.closed = true
-		this.block.cntReaders--
-		this.block.cntWriters--
+class MemFile extends MemFileBase {
+	protected override onClose(): Promise<void> {
+		this.node.cntReaders--
+		this.node.cntWriters--
 		return Promise.resolve()
 	}
 }
 
-class Dir extends Map<string, Dir | Block | string> {
-	mtime = new Date()
+class AppendOnlyMemFile extends MemFile {
+	constructor(node: MemFileNode, name: string) {
+		super(node, name, true)
+	}
+
+	override seek(offset: number, whence?: io.Seek): Promise<number> {
+		return Promise.resolve(this.node.length)
+	}
+}
+
+class MemDirNode extends MemNode {
+	entries = new Map<string, MemNode>()
 }
 
 class MemDir implements File {
 	constructor(
-		private dir: Dir,
-		public name: string,
+		protected node: MemDirNode,
+		protected name: string,
 	) {}
 
 	stat(): Promise<FileInfo> {
 		return Promise.resolve({
 			name: this.name,
 			size: 0,
-			modTime: this.dir.mtime,
+			modTime: this.node.mtime,
 			isDir: true,
 		})
 	}
@@ -136,6 +290,10 @@ class MemDir implements File {
 		return Promise.reject(new errs.ErrDirectory())
 	}
 
+	seek(offset: number, whence?: io.Seek): Promise<number> {
+		return Promise.reject(new errs.ErrDirectory())
+	}
+
 	close(): Promise<void> {
 		return Promise.resolve()
 	}
@@ -145,60 +303,57 @@ class MemDir implements File {
 	}
 }
 
-type GetResult = {
-	p: Dir // parent directory.
-	e: Dir | Block | undefined // entry.
+class MemSymLinkNode extends MemNode {
+	constructor(
+		mode: FileMode,
+		public readonly link: string,
+	) {
+		super(mode)
+	}
+
+	override get length(): number {
+		return this.link.length
+	}
+}
+
+type GetResult<T = MemNode | undefined> = {
+	p: MemDirNode // parent directory.
+	e: T // entry.
 	n: string // name of the entry.
 	r: string // rest part of the given path.
 }
 
 export class MemFs implements Fs {
-	root: Dir = new Dir()
+	root: MemDirNode = new MemDirNode(0o755 as FileMode)
 
-	private get_(name: string, h: Dir[]): Omit<GetResult, 'p'> {
+	#get(name: string, h: MemDirNode[]): Omit<GetResult, 'p'> {
 		// expect `name` to be clean.
-		let e: Dir | Block | undefined = h.pop() as Dir // current visiting entry.
+		let e = h.pop() as MemDirNode // current visiting entry.
 		let n = '' // name of `e`.
 		let r: string | undefined = name
 		for ([n, r] of path.entries(name)) {
-			if (e instanceof Block) {
-				throw new errs.ErrNotDirectory()
-			}
 			if (n === '..') {
 				if (h.length > 0) {
-					e = h.pop() as Dir
+					e = h.pop() as MemDirNode
 				}
 				continue
 			}
 
-			const next = e.get(n)
-			if (next === undefined) {
-				return { e: undefined, n, r }
-			}
-			if (next instanceof Dir) {
-				h.push(next)
-				e = next
-				continue
-			}
-			if (next instanceof Block) {
-				e = next
-				continue
+			const next = e.entries.get(n)
+			if (!(next instanceof MemDirNode)) {
+				if (!next) {
+					h.push(e)
+				}
+				return { e: next, n, r }
 			}
 
 			h.push(e)
-			;({ e, n } = this.get_(next, h))
-			if (e === undefined) {
-				throw new Error('broken link')
-			}
+			e = next
 		}
 
-		if (e instanceof Dir) {
-			h.pop()
-		}
 		return { e, n, r }
 	}
 
-	// returns: entry of given name, basename of the entry, and the parent directory of the entry.
 	private get(name: string): GetResult {
 		name = path.clean(name)
 		if (name === '.') {
@@ -211,198 +366,199 @@ export class MemFs implements Fs {
 		}
 
 		const h = [this.root]
-		const rst = this.get_(name, h)
-		return {
-			...rst,
-			p: h[h.length - 1] ?? this.root,
+		while (true) {
+			const rst = this.#get(name, h)
+			const { e, r } = rst
+			if (e instanceof MemSymLinkNode) {
+				name = path.join(e.link, r)
+				continue
+			}
+
+			return { ...rst, p: h[h.length - 1] ?? this.root }
 		}
 	}
 
-	async open(name: string): Promise<ReadOnlyFile> {
+	private getX(name: string): Omit<GetResult<MemNode>, 'r'> {
+		const rst = this.get(name)
+		const { e, r } = rst
+		if (r !== '') {
+			throw new errs.ErrNotDirectory()
+		}
+		if (!e) {
+			throw new errs.ErrNotExist()
+		}
+
+		return { ...rst, e }
+	}
+
+	open(name: string): Promise<ReadOnlyFile> {
 		return this.openFile(name, OpenFlag.Read, 0 as FileMode)
 	}
 
-	async openFile(name: string, flag: OpenFlag, mode: FileMode): Promise<File> {
-		const { p, e, n } = this.get(name)
-		if (e instanceof Dir) {
+	async openFile(name: string, flag: OpenFlag, mode?: FileMode): Promise<File> {
+		const { p, e, n, r } = this.get(name)
+		if (r !== '') {
+			throw new errs.ErrNotDirectory()
+		}
+		if (e instanceof MemDirNode) {
 			if ((flag & (OpenFlag.Write | OpenFlag.Trunc)) > 0) {
 				throw new errs.ErrDirectory()
 			}
 			return new MemDir(e, n)
 		}
-		if (e instanceof Block) {
-			const x = OpenFlag.Write | OpenFlag.NoReplace
-			if ((flag & x) === x) {
-				throw new errs.ErrExist()
-			}
-			if ((flag & (OpenFlag.Write | OpenFlag.Trunc)) === 0) {
-				return new ReadOnlyMemFile(e, n)
-			}
-			if ((flag & (OpenFlag.Append | OpenFlag.Trunc)) === 0) {
-				const b = new Block()
-				p.set(n, b)
-
-				const f = new MemFile(b, n)
-				return f
-			}
-
-			// Note that the block is stored in append-ready state.
-			const f = new MemFile(e, n)
-			if ((flag & OpenFlag.Trunc) > 0) {
-				// TODO: move offset to 0.
-				e.truncate(0)
-			}
-			return f
-		}
-		if ((flag & OpenFlag.Write) === 0) {
+		if (!e && (flag & OpenFlag.Write) === 0) {
 			throw new errs.ErrNotExist()
 		}
+		if (!e || e instanceof MemFileNode) {
+			const atEnd = (flag & OpenFlag.AtEnd) > 0
 
-		const b = new Block()
-		p.set(n, b)
+			let node = e
+			if (node) {
+				if (node.cntWriters > 0) {
+					throw new errs.ErrBusy()
+				}
 
-		const f = new MemFile(b, n)
-		return f
+				const x = OpenFlag.Write | OpenFlag.NoReplace
+				if ((flag & x) === x) {
+					throw new errs.ErrExist()
+				}
+
+				if ((flag & (OpenFlag.Append | OpenFlag.Write | OpenFlag.Trunc)) === 0) {
+					node.cntReaders++
+					return new ReadOnlyMemFile(node, n, atEnd)
+				}
+			}
+
+			if (!node || (flag & (OpenFlag.Append | OpenFlag.Trunc)) === 0) {
+				node = new MemFileNode(mode ?? (0o644 as FileMode))
+				p.entries.set(n, node)
+			}
+
+			node.cntReaders++
+			node.cntWriters++
+			if ((flag & OpenFlag.Trunc) > 0) {
+				node.blocks = [new Uint8Array()]
+			}
+			if ((flag & OpenFlag.Append) > 0) {
+				return new AppendOnlyMemFile(node, n)
+			}
+
+			return new MemFile(node, n, atEnd)
+		}
+
+		throw new Error('invalid state: unknown type of node')
 	}
 
 	async *readDir(name: string): AsyncIterable<DirEntry> {
-		const { e, r } = this.get(name)
-		if (r !== '') {
-			throw new errs.ErrNotDirectory()
-		}
-		if (e === undefined) {
-			throw new errs.ErrNotExist()
-		}
-		if (e instanceof Block) {
+		const { e } = this.getX(name)
+		if (!(e instanceof MemDirNode)) {
 			throw new errs.ErrNotDirectory()
 		}
 
-		for (const [n, e_] of e) {
-			if (e_ instanceof Dir) {
-				const f = new MemDir(e_, n)
-				yield {
-					name: n,
-					isDir: true,
-					info: () => f.stat(),
-				}
-				continue
+		for (const [n, node] of e.entries) {
+			const isDir = node instanceof MemDirNode
+			yield {
+				name: n,
+				isDir,
+				info: () =>
+					Promise.resolve({
+						name: n,
+						isDir,
+						modTime: node.mtime,
+						size: node.length,
+					}),
 			}
-			if (e_ instanceof Block) {
-				yield {
-					name: n,
-					isDir: false,
-					info: () =>
-						Promise.resolve({
-							name: n,
-							isDir: false,
-							modTime: e_.mtime,
-							size: e_.length,
-						}),
-				}
-				// continue
-			}
-
-			// TODO: `e_` is a link.
 		}
 	}
 
 	async stat(name: string): Promise<FileInfo> {
-		const { e, n } = this.get(name)
-		if (e === undefined) {
-			throw new errs.ErrNotExist()
+		const { e, n } = this.getX(name)
+
+		return {
+			name: n,
+			isDir: e instanceof MemDirNode,
+			modTime: e.mtime,
+			size: e.length,
 		}
-		return e instanceof Block
-			? {
-					name: n,
-					size: e.length,
-					modTime: e.mtime,
-					isDir: false,
-				}
-			: {
-					name: n,
-					size: 0,
-					modTime: e.mtime,
-					isDir: true,
-				}
 	}
 
-	async create(name: string): Promise<File> {
-		return this.openFile(name, OpenFlag.Write | OpenFlag.Trunc, 0 as FileMode)
+	create(name: string): Promise<File> {
+		return this.openFile(name, OpenFlag.Write | OpenFlag.Trunc)
 	}
 
-	async mkdir(name: string, mode: FileMode): Promise<void> {
-		const { p, e, n } = this.get(name)
-		if (e !== undefined) {
-			throw new errs.ErrExist()
-		}
-
-		const f = new Dir()
-		p.set(n, f)
-	}
-
-	async mkdirAll(name: string, mode: FileMode): Promise<void> {
+	mkdir(name: string, mode?: FileMode): Promise<void> {
 		const { p, e, n, r } = this.get(name)
-		if (e instanceof Dir) return
-		if (e instanceof Block) {
-			throw new errs.ErrNotDirectory()
+		if (r !== '') {
+			return Promise.reject(new errs.ErrNotDirectory())
+		}
+		if (e !== undefined) {
+			return Promise.reject(new errs.ErrExist())
 		}
 
-		const d = new Dir()
-		p.set(n, d)
+		const node = new MemDirNode(mode ?? (0o755 as FileMode))
+		p.entries.set(n, node)
+		return Promise.resolve()
+	}
 
-		let prev = d
-		for (const [n] of entries(r)) {
-			const d = new Dir()
-			prev.set(n, d)
-			prev = d
+	mkdirAll(name: string, mode?: FileMode): Promise<void> {
+		const { p, e, n, r } = this.get(name)
+		if (e) {
+			if (!(e instanceof MemDirNode)) {
+				return Promise.reject(new errs.ErrNotDirectory())
+			}
+			if (r === '') {
+				return Promise.resolve()
+			}
 		}
+
+		let d = new MemDirNode(mode ?? (0o755 as FileMode))
+		for (const [n] of path.entriesReverse(r)) {
+			const next = new MemDirNode(mode ?? (0o755 as FileMode))
+			next.entries.set(n, d)
+			d = next
+		}
+
+		p.entries.set(n, d)
+		return Promise.resolve()
 	}
 
 	async rename(oldname: string, newname: string): Promise<void> {
-		const a = this.get(oldname)
-		if (a.e === undefined) {
-			throw new errs.ErrNotExist()
-		}
-
+		const a = this.getX(oldname)
 		const b = this.get(newname)
 		if (b.r !== '') {
 			throw new errs.ErrNotDirectory()
 		}
 
-		// Same file.
-		if (a.e === b.e) return
+		if (a.e === b.e) {
+			// Same file.
+			return
+		}
 
-		if (a.e instanceof Block) {
-			if (b.e instanceof Dir) {
+		if (a.e instanceof MemFileNode) {
+			if (b.e instanceof MemDirNode) {
 				throw new errs.ErrDirectory()
 			}
 		} else {
-			// `a.e` instanceof `Dir`
-			if (b.e instanceof Dir && b.e.size !== 0) {
+			// `a.e` instanceof `MemDirNode`
+			if (b.e instanceof MemDirNode && b.e.entries.size !== 0) {
 				throw new errs.ErrDirectoryNotEmpty()
 			}
-			if (b.e instanceof Block) {
+			if (b.e instanceof MemFileNode) {
 				throw new errs.ErrNotDirectory()
 			}
 		}
 
-		b.p.set(b.n, a.e)
-		a.p.delete(a.n)
+		a.p.entries.delete(a.n)
+		b.p.entries.set(b.n, a.e)
 		return
 	}
 
 	async remove(name: string): Promise<void> {
-		const { p, e, n, r } = this.get(name)
-		if (e instanceof Dir && e.size !== 0) {
+		const { p, e, n } = this.getX(name)
+		if (e instanceof MemDirNode && e.entries.size !== 0) {
 			throw new errs.ErrDirectoryNotEmpty()
 		}
-		if (r !== '') {
-			throw new errs.ErrNotDirectory()
-		}
-		if (e === undefined) {
-			throw new errs.ErrNotExist()
-		}
 
-		p.delete(n)
+		p.entries.delete(n)
 	}
 }

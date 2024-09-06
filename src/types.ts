@@ -1,4 +1,5 @@
 import type { Span } from './Buff'
+import type { Seek } from './constants'
 
 export interface Reader {
 	read(p: Span): Promise<number | null>
@@ -12,6 +13,6 @@ export interface Closer extends AsyncDisposable {
 	close(): Promise<void>
 }
 
-export interface Slicer {
-	slice(start?: number, end?: number): Promise<Reader & Slicer & Closer>
+export interface Seeker {
+	seek(offset: number, whence?: Seek): Promise<number>
 }

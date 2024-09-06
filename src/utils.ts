@@ -7,7 +7,7 @@ export function iota(l: number, init = 0): number[] {
 		.map(_ => init++)
 }
 
-export class LimitedReader implements Reader {
+class LimitedReader implements Reader {
 	constructor(
 		private r: Reader,
 		private n: number,
@@ -30,6 +30,10 @@ export class LimitedReader implements Reader {
 	}
 }
 
+export function limit(r: Reader, n: number): Reader {
+	return new LimitedReader(r, n)
+}
+
 export async function readAtLeast(r: Reader, p: Span, min: number): Promise<number> {
 	if (p.length < min) {
 		throw new Error('short buffer')
@@ -39,7 +43,7 @@ export async function readAtLeast(r: Reader, p: Span, min: number): Promise<numb
 	while (pos < min) {
 		const n = await r.read(p.subarray(pos))
 		if (n === null) {
-			throw new Error('unexpected end of file')
+			return pos
 		}
 		pos += n
 	}

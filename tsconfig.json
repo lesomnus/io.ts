@@ -1,9 +1,9 @@
 {
 	"compilerOptions": {
 		"module": "ESNext",
-		"target": "ES2023",
+		"target": "ESNext",
 		"useDefineForClassFields": true,
-		"lib": ["ES2023", "DOM", "DOM.Iterable"],
+		"lib": ["ESNext", "DOM", "DOM.Iterable"],
 		"types": ["vitest/globals", "@vitest/browser/providers/playwright"],
 		"declaration": true,
 		"declarationMap": true,

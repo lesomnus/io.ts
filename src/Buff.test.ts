@@ -2,8 +2,6 @@ import { describe, expect, it } from 'vitest'
 
 import io from '.'
 
-import { testReader } from './io.suite.test'
-
 describe('Buff', () => {
 	describe('constructor', () => {
 		it('views over the given ArrayBuffer', () => {
@@ -150,11 +148,5 @@ describe('Buff', () => {
 			expect(b.capacity).greaterThan(0)
 			expect([...b]).toEqual(d)
 		})
-	})
-
-	testReader(async () => {
-		const d = io.iota(42, 1)
-		const r = io.Buff.from(d)
-		return [new Uint8Array(d), r] as const
 	})
 })

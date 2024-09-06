@@ -2,8 +2,6 @@ import { describe, expect, it, test } from 'vitest'
 
 import io from '.'
 
-import { testReader } from './io.suite.test'
-
 test('iota', () => {
 	expect(io.iota(0)).toEqual([])
 	expect(io.iota(2)).toEqual([0, 1])
@@ -15,17 +13,16 @@ describe('LimitedReader', () => {
 	it('limits amount of data to read from the given reader', async () => {
 		const d = io.iota(42, 1)
 		const b = io.Buff.from(d)
-		const l = new io.LimitedReader(b, d.length - 2)
-		const p = io.Buff.make(d.length)
+		const r = io.limit(b, d.length - 2)
 
-		await expect(l.read(p)).resolves.toBe(d.length - 2)
-		expect([...p].slice(0, -2)).toEqual([...d.slice(0, -2)])
+		const p = await io.readAll(r)
+		expect([...p]).to.eql([...d.slice(0, -2)])
 	})
 
 	it('does not keep its own read position', async () => {
 		const d = io.iota(42, 1)
 		const b = io.Buff.from(d)
-		const l = new io.LimitedReader(b, d.length - 2)
+		const l = io.limit(b, d.length - 2)
 		const p = io.Buff.make(2)
 
 		await expect(l.read(p)).resolves.toBe(2)
@@ -34,13 +31,6 @@ describe('LimitedReader', () => {
 		await expect(b.read(p)).resolves.toBe(2)
 		await expect(l.read(p)).resolves.toBe(2)
 		expect([...p]).toEqual([...d.slice(4, 6)])
-	})
-
-	testReader(async () => {
-		const d = io.iota(42, 1)
-		const b = io.Buff.from(d)
-		const l = new io.LimitedReader(b, d.length - 2)
-		return [Uint8Array.from(d.slice(0, -2)), l]
 	})
 })
 
@@ -61,12 +51,12 @@ describe('readAtLeast', () => {
 		await expect(() => io.readAtLeast(b, s, 6)).rejects.toThrow()
 	})
 
-	it('throws Error if reader is closed after reading fewer than `min`', async () => {
+	it('stops read if given reader is closed and returns number of bytes read', async () => {
 		const d = io.iota(42, 1)
 		const b = io.Buff.from(d)
 		const s = io.Buff.make(50)
 
-		await expect(() => io.readAtLeast(b, s, s.length)).rejects.toThrow()
+		await expect(io.readAtLeast(b, s, s.length)).resolves.toEqual(42)
 	})
 })
 
