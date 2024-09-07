@@ -34,6 +34,27 @@ export function limit(r: Reader, n: number): Reader {
 	return new LimitedReader(r, n)
 }
 
+class TeeReader implements Reader {
+	constructor(
+		private r: Reader,
+		private w: Writer,
+	) {}
+
+	async read(p: Span): Promise<number | null> {
+		const n = await this.r.read(p)
+		if (n === null) {
+			return null
+		}
+
+		await this.w.write(p.subbuff(0, n))
+		return n
+	}
+}
+
+export function tee(r: Reader, w: Writer): Reader {
+	return new TeeReader(r, w)
+}
+
 export async function readAtLeast(r: Reader, p: Span, min: number): Promise<number> {
 	if (p.length < min) {
 		throw new Error('short buffer')
@@ -63,7 +84,9 @@ export async function readAll(r: Reader): Promise<Span> {
 
 		b = b.subbuff(0, b.length + n)
 		if (b.length === b.capacity) {
-			b = b.grow(b.length * 2)
+			const next = make(b.length, b.length * 2)
+			next.data.set(b.data)
+			b = next
 		}
 	}
 }

@@ -16,6 +16,21 @@ function mustNotNegative(n: number) {
 	}
 }
 
+export interface Span extends Iterable<number> {
+	readonly byteLength: number
+	readonly length: number
+	readonly capacity: number
+	readonly data: Uint8Array
+
+	attach(b: ArrayBuffer): void
+
+	subarray(): Span
+	subarray(begin: number, end?: number): Span
+	subarray(begin?: number, end?: number): Span
+
+	subbuff(begin: number, end?: number): Span
+}
+
 /**
  * Variable sized buffer of bytes.
  * It uses {@link ArrayBuffer} as an underlying buffer so it simply a view over the `ArrayBuffer` like {@link Uint8Array}.
@@ -28,7 +43,7 @@ function mustNotNegative(n: number) {
  *              capacity
  * ```
  */
-export class Buff implements Reader, Writer {
+export class Buff implements Reader, Writer, Span {
 	/**
 	 * Creates a new `Buff`.
 	 *
@@ -142,12 +157,12 @@ export class Buff implements Reader, Writer {
 		return this.data[Symbol.iterator]()
 	}
 
-	// TODO: it does not look safe
 	attach(b: ArrayBuffer) {
-		// if(!buffer.detached){
-		// 	throw new Error('...')
-		// }
-		this.#b.buffer = ArrayBuffer.isView(b) ? b.buffer : b
+		if (b.byteLength < this.#o + this.#l) {
+			throw new Error('buffer is smaller than the view')
+		}
+
+		this.#b.buffer = b
 	}
 
 	get view() {
@@ -291,13 +306,6 @@ export class Buff implements Reader, Writer {
 		this.subarray(m).data.set(p.data)
 		return Promise.resolve(n)
 	}
-}
-
-export type Span = Omit<Buff, 'truncate' | 'drain' | 'next' | 'resize' | 'subarray' | 'subbuff' | 'read'> & {
-	subarray(): Span
-	subarray(begin: number, end?: number): Span
-	subarray(begin?: number, end?: number): Span
-	subbuff(begin: number, end?: number): Span
 }
 
 export function make(length: number, cap?: number): Span {

@@ -126,10 +126,6 @@ abstract class MemFileBase implements File {
 		let c = b.capacity
 		while (true) {
 			if (o >= p.length) {
-				if (b.capacity !== c) {
-					// block is grown so the underlying buffer is changed.
-					this.node.blocks[this.curr] = b.data
-				}
 				return o
 			}
 
@@ -144,13 +140,18 @@ abstract class MemFileBase implements File {
 				c = next.capacity
 				continue
 			}
+			if (c !== b.capacity) {
+				// block is grown so the underlying buffer is changed.
+				this.node.blocks[this.curr] = b.data
+				c = b.capacity
+			}
 
 			o += n
 		}
 
-		const needGrow = o < p.length
-		while (needGrow) {
-			const end = o + Block.Size
+		const isGrown = o < p.length
+		while (o < p.length) {
+			const end = Math.min(o + Block.Size, p.length)
 			const d = p.subbuff(o, end).data
 			const b = new Uint8Array(d.length)
 
@@ -159,7 +160,7 @@ abstract class MemFileBase implements File {
 
 			o += d.length
 		}
-		if (needGrow) {
+		if (isGrown) {
 			const b = this.node.blocks[this.node.blocks.length - 1]
 			this.b = Promise.resolve(new Block(b))
 		}
@@ -396,6 +397,10 @@ export class MemFs implements Fs {
 	}
 
 	async openFile(name: string, flag: OpenFlag, mode?: FileMode): Promise<File> {
+		if (flag === OpenFlag.Unspecified) {
+			flag = OpenFlag.Read
+		}
+
 		const { p, e, n, r } = this.get(name)
 		if (r !== '') {
 			throw new errs.ErrNotDirectory()
@@ -406,15 +411,16 @@ export class MemFs implements Fs {
 			}
 			return new MemDir(e, n)
 		}
-		if (!e && (flag & OpenFlag.Write) === 0) {
+		if (!e && (flag & OpenFlag.Read) > 0) {
 			throw new errs.ErrNotExist()
 		}
 		if (!e || e instanceof MemFileNode) {
 			const atEnd = (flag & OpenFlag.AtEnd) > 0
+			const wFlag = flag & (OpenFlag.Write | OpenFlag.Append | OpenFlag.Trunc)
 
 			let node = e
 			if (node) {
-				if (node.cntWriters > 0) {
+				if (node.cntWriters > 0 && wFlag !== OpenFlag.Write) {
 					throw new errs.ErrBusy()
 				}
 
@@ -423,13 +429,13 @@ export class MemFs implements Fs {
 					throw new errs.ErrExist()
 				}
 
-				if ((flag & (OpenFlag.Append | OpenFlag.Write | OpenFlag.Trunc)) === 0) {
+				if (wFlag === 0) {
 					node.cntReaders++
 					return new ReadOnlyMemFile(node, n, atEnd)
 				}
 			}
 
-			if (!node || (flag & (OpenFlag.Append | OpenFlag.Trunc)) === 0) {
+			if (!node || (flag & OpenFlag.Read) === 0) {
 				node = new MemFileNode(mode ?? (0o644 as FileMode))
 				p.entries.set(n, node)
 			}

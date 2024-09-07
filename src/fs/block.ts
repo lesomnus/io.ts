@@ -18,7 +18,7 @@ export class Block implements io.Reader, io.Writer, io.Seeker {
 	#l: number
 	#o = 0
 
-	constructor(public data: Uint8Array) {
+	constructor(public data: Uint8Array = new Uint8Array()) {
 		this.#l = data.length
 	}
 
@@ -68,7 +68,7 @@ export class Block implements io.Reader, io.Writer, io.Seeker {
 		}
 
 		const src = this.data.subarray(o)
-		src.set(p.data)
+		src.set(p.data.subarray(0, src.length))
 
 		const n = Math.min(r, p.length)
 		this.#l = Math.max(o + n, this.#l)
