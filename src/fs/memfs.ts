@@ -329,29 +329,28 @@ export class MemFs implements Fs {
 
 	#get(name: string, h: MemDirNode[]): Omit<GetResult, 'p'> {
 		// expect `name` to be clean.
-		let e = h.pop() as MemDirNode // current visiting entry.
+		let e = h[h.length - 1] as MemDirNode // current visiting entry.
 		let n = '' // name of `e`.
 		let r: string | undefined = name
 		for ([n, r] of path.entries(name)) {
 			if (n === '..') {
 				if (h.length > 0) {
-					e = h.pop() as MemDirNode
+					h.pop() as MemDirNode
+					e = h[h.length - 1] as MemDirNode
 				}
 				continue
 			}
 
 			const next = e.entries.get(n)
 			if (!(next instanceof MemDirNode)) {
-				if (!next) {
-					h.push(e)
-				}
 				return { e: next, n, r }
 			}
 
-			h.push(e)
+			h.push(next)
 			e = next
 		}
 
+		h.pop()
 		return { e, n, r }
 	}
 
@@ -379,6 +378,30 @@ export class MemFs implements Fs {
 		}
 	}
 
+	private getLink(name: string): GetResult {
+		name = path.clean(name)
+		if (name === '.') {
+			return {
+				p: this.root,
+				e: this.root,
+				n: '/',
+				r: name,
+			}
+		}
+
+		const h = [this.root]
+		while (true) {
+			const rst = this.#get(name, h)
+			const { e, r } = rst
+			if (e instanceof MemSymLinkNode && r !== '') {
+				name = path.join(e.link, r)
+				continue
+			}
+
+			return { ...rst, p: h[h.length - 1] ?? this.root }
+		}
+	}
+
 	private getX(name: string): Omit<GetResult<MemNode>, 'r'> {
 		const rst = this.get(name)
 		const { e, r } = rst
@@ -390,6 +413,43 @@ export class MemFs implements Fs {
 		}
 
 		return { ...rst, e }
+	}
+
+	private getLinkX(name: string): Omit<GetResult<MemSymLinkNode>, 'r'> {
+		const rst = this.getLink(name)
+		const { e, r } = rst
+		if (r !== '') {
+			throw new errs.ErrNotDirectory()
+		}
+		if (!e) {
+			throw new errs.ErrNotExist()
+		}
+		if (!(e instanceof MemSymLinkNode)) {
+			throw new Error('invalid argument')
+		}
+
+		return { ...rst, e }
+	}
+
+	async stat(name: string): Promise<FileInfo> {
+		const { e, n } = this.getX(name)
+
+		return {
+			name: n,
+			isDir: e instanceof MemDirNode,
+			modTime: e.mtime,
+			size: e.length,
+		}
+	}
+
+	async lstat(name: string): Promise<FileInfo> {
+		const { e, n } = this.getLinkX(name)
+		return {
+			name: n,
+			size: e.length,
+			modTime: new Date(e.mode),
+			isDir: false,
+		}
 	}
 
 	open(name: string): Promise<ReadOnlyFile> {
@@ -435,7 +495,7 @@ export class MemFs implements Fs {
 				}
 			}
 
-			if (!node || (flag & OpenFlag.Read) === 0) {
+			if (!node || (flag & (OpenFlag.Read | OpenFlag.Append | OpenFlag.Trunc)) === 0) {
 				node = new MemFileNode(mode ?? (0o644 as FileMode))
 				p.entries.set(n, node)
 			}
@@ -474,17 +534,6 @@ export class MemFs implements Fs {
 						size: node.length,
 					}),
 			}
-		}
-	}
-
-	async stat(name: string): Promise<FileInfo> {
-		const { e, n } = this.getX(name)
-
-		return {
-			name: n,
-			isDir: e instanceof MemDirNode,
-			modTime: e.mtime,
-			size: e.length,
 		}
 	}
 
@@ -566,5 +615,38 @@ export class MemFs implements Fs {
 		}
 
 		p.entries.delete(n)
+	}
+
+	link(oldname: string, newname: string): Promise<void> {
+		const a = this.getX(oldname)
+		const b = this.get(newname)
+		if (b.e) {
+			return Promise.reject(new errs.ErrExist())
+		}
+		if (b.r !== '') {
+			return Promise.reject(new errs.ErrNotDirectory())
+		}
+
+		b.p.entries.set(b.n, a.e)
+		return Promise.resolve()
+	}
+
+	symlink(oldname: string, newname: string): Promise<void> {
+		const { p, e, n, r } = this.get(newname)
+		if (e) {
+			return Promise.reject(new errs.ErrExist())
+		}
+		if (r !== '') {
+			return Promise.reject(new errs.ErrNotDirectory())
+		}
+
+		const f = new MemSymLinkNode(0o777, oldname)
+		p.entries.set(n, f)
+		return Promise.resolve()
+	}
+
+	async readLink(name: string): Promise<string> {
+		const { e } = this.getLinkX(name)
+		return Promise.resolve(e.link)
 	}
 }

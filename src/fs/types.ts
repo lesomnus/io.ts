@@ -34,13 +34,18 @@ export interface StatFs extends ReadOnlyFs {
 }
 
 export interface Fs extends ReadDirFs, StatFs {
-	open(name: string): Promise<ReadOnlyFile>
 	openFile(name: string, flag: OpenFlag, mode?: FileMode): Promise<File>
+	open(name: string): Promise<ReadOnlyFile>
 	create(name: string): Promise<File>
 	mkdir(name: string, mode?: FileMode): Promise<void>
 	mkdirAll(name: string, mode?: FileMode): Promise<void>
 	rename(oldname: string, newname: string): Promise<void>
 	remove(name: string): Promise<void>
+
+	link(oldname: string, newname: string): Promise<void>
+	symlink(oldname: string, newname: string): Promise<void>
+	lstat(name: string): Promise<FileInfo>
+	readLink(name: string): Promise<string>
 }
 
 export interface PartialFs extends Partial<Fs> {}

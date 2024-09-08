@@ -6,24 +6,21 @@ const F = fs.OpenFlag
 const D = new TextEncoder().encode('Royale with Cheese\nLe big Mac\n')
 
 type TestCase = [string, (flag: fs.OpenFlag) => Promise<fs.File>]
-const testCases: TestCase[] = [
-	[
-		'memfs',
-		(() => {
-			let fsys: fs.Fs | undefined
-			return (flag: fs.OpenFlag) => {
-				if (!fsys) {
-					fsys = new fs.MemFs()
-					onTestFinished(() => {
-						fsys = undefined
-					})
-				}
+const testCases: TestCase[] = [['memfs', provide(() => new fs.MemFs())]]
 
-				return fsys.openFile('foo', flag)
-			}
-		})(),
-	],
-]
+function provide(ctor: () => fs.Fs) {
+	let fsys: fs.Fs | undefined
+	return (flag: fs.OpenFlag) => {
+		if (!fsys) {
+			fsys = ctor()
+			onTestFinished(() => {
+				fsys = undefined
+			})
+		}
+
+		return fsys.openFile('foo', flag)
+	}
+}
 
 async function using<T extends AsyncDisposable, U>(vs: [...Promise<T>[]], f: (...vs: [...T[]]) => Promise<U>) {
 	const ws = await Promise.all(vs)
