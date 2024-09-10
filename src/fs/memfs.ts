@@ -121,7 +121,6 @@ abstract class MemFileBase implements File {
 
 	async #write(p: io.Span): Promise<number | null> {
 		let o = 0
-
 		let b = await this.b
 		let c = b.capacity
 		while (true) {
@@ -149,20 +148,23 @@ abstract class MemFileBase implements File {
 			o += n
 		}
 
-		const isGrown = o < p.length
-		while (o < p.length) {
-			const end = Math.min(o + Block.Size, p.length)
-			const d = p.subbuff(o, end).data
-			const b = new Uint8Array(d.length)
+		if (o < p.length) {
+			// Allocate new blocks.
+			while (o < p.length) {
+				const end = Math.min(o + Block.Size, p.length)
+				const d = p.subbuff(o, end).data
+				const b = new Uint8Array(d.length)
 
-			b.set(d)
-			this.node.blocks.push(b)
+				b.set(d)
+				this.node.blocks.push(b)
 
-			o += d.length
-		}
-		if (isGrown) {
-			const b = this.node.blocks[this.node.blocks.length - 1]
+				o += d.length
+			}
+
+			const i = this.node.blocks.length - 1
+			const b = this.node.blocks[i]
 			this.b = Promise.resolve(new Block(b))
+			this.curr = i
 		}
 
 		return o
@@ -257,6 +259,10 @@ class MemFile extends MemFileBase {
 class AppendOnlyMemFile extends MemFile {
 	constructor(node: MemFileNode, name: string) {
 		super(node, name, true)
+	}
+
+	read(p: io.Span): Promise<number | null> {
+		return Promise.resolve(null)
 	}
 
 	override seek(offset: number, whence?: io.Seek): Promise<number> {
@@ -415,7 +421,7 @@ export class MemFs implements Fs {
 		return { ...rst, e }
 	}
 
-	private getLinkX(name: string): Omit<GetResult<MemSymLinkNode>, 'r'> {
+	private getLinkX(name: string): Omit<GetResult<MemNode>, 'r'> {
 		const rst = this.getLink(name)
 		const { e, r } = rst
 		if (r !== '') {
@@ -423,9 +429,6 @@ export class MemFs implements Fs {
 		}
 		if (!e) {
 			throw new errs.ErrNotExist()
-		}
-		if (!(e instanceof MemSymLinkNode)) {
-			throw new Error('invalid argument')
 		}
 
 		return { ...rst, e }
@@ -436,9 +439,9 @@ export class MemFs implements Fs {
 
 		return {
 			name: n,
-			isDir: e instanceof MemDirNode,
-			modTime: e.mtime,
 			size: e.length,
+			modTime: e.mtime,
+			isDir: e instanceof MemDirNode,
 		}
 	}
 
@@ -447,8 +450,8 @@ export class MemFs implements Fs {
 		return {
 			name: n,
 			size: e.length,
-			modTime: new Date(e.mode),
-			isDir: false,
+			modTime: e.mtime,
+			isDir: e instanceof MemDirNode,
 		}
 	}
 
@@ -647,6 +650,9 @@ export class MemFs implements Fs {
 
 	async readLink(name: string): Promise<string> {
 		const { e } = this.getLinkX(name)
+		if (!(e instanceof MemSymLinkNode)) {
+			throw new Error('invalid argument')
+		}
 		return Promise.resolve(e.link)
 	}
 }

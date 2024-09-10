@@ -2,10 +2,7 @@
 	"name": "@lesomnus/io",
 	"version": "0.1.0",
 	"description": "Golang `io`-like I/O interfaces",
-	"keywords": [
-		"golang",
-		"io"
-	],
+	"keywords": ["golang", "io"],
 	"homepage": "https://github.com/lesomnus/io.ts",
 	"license": "Apache-2.0",
 	"author": {

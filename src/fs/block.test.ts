@@ -9,7 +9,6 @@ describe('Block', () => {
 		const d = D.slice()
 		const b = io.make(5)
 		const block = new Block(d)
-		await block.seek(0)
 
 		// Royale•with•Cheese↵Le•big•Mac↵
 		//   ^    ^    ^
@@ -26,7 +25,6 @@ describe('Block', () => {
 		const d = D.slice()
 		const b = io.make(5)
 		const block = new Block(d)
-		await block.seek(0)
 
 		// Royale•with•Cheese↵Le•big•Mac↵
 		//     ^  ^  ^
@@ -38,6 +36,13 @@ describe('Block', () => {
 
 		await block.write(io.Buff.from(io.iota(3, 36)))
 		expect([...d.slice(8, 8 + 3)]).to.eql([...io.iota(3, 36)])
+	})
+	test('further write returns null after it reaches Block.Size', async () => {
+		const block = new Block()
+		await block.write(io.from(io.iota(Block.Size)))
+
+		const n = await block.write(io.from(io.iota(3)))
+		expect(n).to.be.null
 	})
 	test('read/write data larger than the block size', async () => {
 		const d = io.iota(Block.Size * 1.5).map(v => v % 0xff)

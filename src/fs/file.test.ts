@@ -6,13 +6,27 @@ const F = fs.OpenFlag
 const D = new TextEncoder().encode('Royale with Cheese\nLe big Mac\n')
 
 type TestCase = [string, (flag: fs.OpenFlag) => Promise<fs.File>]
-const testCases: TestCase[] = [['memfs', provide(() => new fs.MemFs())]]
+const testCases: TestCase[] = [
+	//
+	['memfs', provide(() => Promise.resolve(new fs.MemFs()))],
+]
+if (expect.getState().environment === 'browser') {
+	testCases.push([
+		'idbfs',
+		provide(async () => {
+			const name = Math.random().toString(36).substring(2, 12)
+			const fsys = await fs.newIdbFs(name)
+			onTestFinished(() => fsys.delete())
+			return fsys
+		}),
+	])
+}
 
-function provide(ctor: () => fs.Fs) {
+function provide(ctor: () => Promise<fs.Fs>) {
 	let fsys: fs.Fs | undefined
-	return (flag: fs.OpenFlag) => {
+	return async (flag: fs.OpenFlag) => {
 		if (!fsys) {
-			fsys = ctor()
+			fsys = await ctor()
 			onTestFinished(() => {
 				fsys = undefined
 			})
@@ -91,7 +105,7 @@ describe.each(testCases)('%s', (_, open) => {
 	})
 	test('flag Write creates a file if it does not exist', async () => {
 		const op = using([open(F.Write)], async f => true)
-		await expect(op).resolves.ok
+		await expect(op).resolves.toBeTruthy()
 	})
 	test('flag Write replaces a file if it already exist', async () => {
 		const d = [1, 2]
@@ -133,8 +147,18 @@ describe.each(testCases)('%s', (_, open) => {
 		const d = io.iota(Block.Size * 1.5).map(v => v % 0xff)
 
 		await using([open(F.Write)], f => io.copy(f, io.Buff.from(d)))
-		const b = await using([open(F.Read)], f => io.readAll(f))
-		expect(b.data.every((v, i) => d[i] === v)).to.be.true
+		const p = await using([open(F.Read)], f => io.readAll(f))
+		expect(p.data.every((v, i) => d[i] === v)).to.be.true
+	})
+	test('write data equal to the block size and then write a little more', async () => {
+		const d = io.iota(Block.Size * 1.5).map(v => v % 0xff)
+		await using([open(F.Write)], async f => {
+			await f.write(io.Buff.from(d.slice(0, Block.Size)))
+			await f.write(io.Buff.from(d.slice(Block.Size)))
+		})
+
+		const p = await using([open(F.Read)], f => io.readAll(f))
+		expect(p.data.every((v, i) => d[i] === v)).to.be.true
 	})
 	test('read/write data larger than the block size at once', async () => {
 		const d = io.iota(Block.Size * 1.5).map(v => v % 0xff)
@@ -155,19 +179,24 @@ describe.each(testCases)('%s', (_, open) => {
 			await io.copy(f, io.Buff.from(d))
 		})
 
-		const b = await using([open(F.Read)], f => io.readAll(f))
-		expect(b.data.every((v, i) => d[i] === v)).to.be.true
+		const p = await using([open(F.Read)], f => io.readAll(f))
+		expect(p.data.every((v, i) => d[i] === v)).to.be.true
 	})
 	test('overwrite on the existing blocks after close', async () => {
 		const d = io.iota(Block.Size * 1.5).map(v => v % 0xff)
 
 		await using([open(F.Write)], f => io.copy(f, io.Buff.from(d)))
-		await using([open(F.Read | F.Write)], async f => {
+		await using([open(F.Read | F.Write)], f => {
 			d.reverse()
-			await io.copy(f, io.Buff.from(d))
+			return io.copy(f, io.Buff.from(d))
 		})
 
-		const b = await using([open(F.Read)], f => io.readAll(f))
-		expect(b.data.every((v, i) => d[i] === v)).to.be.true
+		const p = await using([open(F.Read)], f => io.readAll(f))
+		expect(
+			p.data.every((v, i) => {
+				// console.log(i, d[i], v)
+				return d[i] === v
+			}),
+		).to.be.true
 	})
 })

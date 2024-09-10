@@ -188,6 +188,20 @@ describe.each(testCases)('%s', (_, make) => {
 		await fsys.symlink('foo', 'bar')
 		await expect(fsys.lstat('bar')).resolves.toBeTruthy()
 	})
+	test('lstat a file', async () => {
+		await using([fsys.create('foo')], async f => true)
+
+		const info1 = await fsys.stat('foo')
+		const info2 = await fsys.lstat('foo')
+		expect(info2).to.eql(info1)
+	})
+	test('lstat a directory', async () => {
+		await fsys.mkdir('foo')
+
+		const info1 = await fsys.stat('foo')
+		const info2 = await fsys.lstat('foo')
+		expect(info2).to.eql(info1)
+	})
 	test('readLink a symlink', async () => {
 		const link = 'foo'
 

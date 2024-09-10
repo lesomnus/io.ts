@@ -52,13 +52,13 @@ export class Block implements io.Reader, io.Writer, io.Seeker {
 
 	write(p: io.Span): Promise<number | null> {
 		const o = this.#o
+		if (o >= Block.Size) {
+			return Promise.resolve(null)
+		}
+
 		let c = this.capacity
 		let r = c - o
 		if (r < p.length) {
-			if (c === Block.Size) {
-				return Promise.resolve(null)
-			}
-
 			c = Math.min(Block.Size, o + p.length)
 			const d = new Uint8Array(c)
 			d.set(this.data)

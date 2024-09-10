@@ -72,7 +72,7 @@ type DirNode = Extract<Node, { type: FileType.Directory }>
 type FileNode = Extract<Node, { type: FileType.RegularFile }>
 // type SymLinkNode = Extract<Node, { type: FileType.SymbolicLink }>
 
-function req<T extends {}>(f: () => IDBRequest<T>): Promise<T> {
+function req<T>(f: () => IDBRequest<T>): Promise<T> {
 	return new Promise<T>((resolve, reject) => {
 		const q = f()
 		q.onsuccess = () => resolve(q.result)
@@ -94,14 +94,14 @@ function exec<T>(tx: IDBTransaction, f: () => Promise<T>) {
 }
 
 abstract class IdbFileBase {
-	#isLocked = false
+	#op: Promise<void> = Promise.resolve()
 
 	protected closed = false
 
 	protected q: Promise<Block>[] = []
 	protected b: Promise<Block>
-	protected curr: number // index of the ID of the first block in `#bs`.
-	protected isDirty = false // indicates whether current block is dirty or not.
+	protected curr: number // index of the ID of the first block in `q`.
+	protected isDirty = false // indicates whether `b` is dirty or not.
 
 	constructor(
 		protected db: IDBDatabase,
@@ -113,7 +113,7 @@ abstract class IdbFileBase {
 			this.curr = 0
 			this.b = Promise.resolve(new Block(new Uint8Array(0)))
 		} else {
-			this.curr = atEnd ? Math.min(node.blockIds.length - 1, 0) : 0
+			this.curr = atEnd ? node.blockIds.length - 1 : 0
 			const id = node.blockIds[this.curr]
 			let b = this.getBlock(id)
 			if (atEnd) {
@@ -136,18 +136,7 @@ abstract class IdbFileBase {
 		return new Block(d)
 	}
 
-	protected do<T>(f: () => Promise<T>): Promise<T> {
-		if (this.#isLocked) {
-			return Promise.reject('operation is locked')
-		}
-
-		this.#isLocked = true
-		return f().finally(() => {
-			this.#isLocked = false
-		})
-	}
-
-	protected async getNextBlock(): Promise<Block | undefined> {
+	protected async advanceBlock(): Promise<Block | undefined> {
 		if (this.curr + 1 >= this.node.blockIds.length) {
 			// No more blocks.
 			return undefined
@@ -181,6 +170,12 @@ abstract class IdbFileBase {
 		return this.b
 	}
 
+	protected do<T>(f: () => Promise<T>): Promise<T> {
+		const op = this.#op.then(f)
+		this.#op = op.catch(() => {}) as Promise<void>
+		return op
+	}
+
 	stat(): Promise<FileInfo> {
 		return Promise.resolve({
 			name: this.name,
@@ -190,7 +185,102 @@ abstract class IdbFileBase {
 		})
 	}
 
-	async seek(offset: number, whence?: io.Seek): Promise<number> {
+	async #read(p: io.Span): Promise<number | null> {
+		let o = 0
+		while (o < p.length) {
+			const b = await this.b
+			if (b.available === 0) {
+				break
+			}
+
+			const n = await b.read(p.subbuff(o))
+			if (n === null) {
+				throw new Error('invalid state: content of block must be available')
+			}
+
+			o += n
+			if (b.available === 0) {
+				await this.advanceBlock()
+			}
+		}
+
+		if (o === 0) {
+			return null
+		}
+		return o
+	}
+
+	read(p: io.Span): Promise<number | null> {
+		if (this.closed) return Promise.resolve(null)
+		return this.do(() => this.#read(p))
+	}
+
+	async #write(p: io.Span): Promise<number | null> {
+		let o = 0
+
+		let b = await this.b
+		while (true) {
+			if (o >= p.length) {
+				return o
+			}
+
+			const n = await b.write(p.subbuff(o))
+			if (n === null) {
+				const next = await this.advanceBlock()
+				if (!next) {
+					break
+				}
+
+				b = next
+				continue
+			}
+
+			this.isDirty = true
+			o += n
+		}
+
+		const ds: Uint8Array[] = []
+		if (this.curr >= this.node.blockIds.length) {
+			// current block is a new block.
+			ds.push(b.data)
+			this.isDirty = false
+		}
+
+		while (o < p.length) {
+			const end = Math.min(o + Block.Size, p.length)
+			ds.push(p.subbuff(o, end).data)
+			o = end
+		}
+
+		const tx = this.db.transaction([NodeStoreName, BlockStoreName], 'readwrite')
+		this.node = await exec(tx, async () => {
+			const blocks = tx.objectStore(BlockStoreName)
+			const node = structuredClone(this.node)
+			if (this.isDirty) {
+				await req(() => blocks.put(b, node.blockIds[this.curr]))
+			}
+
+			const ids = (await Promise.all(ds.slice().map(d => req(() => blocks.add(d))))) as number[]
+			node.blockIds.push(...ids)
+			node.size = node.blockIds.length * Block.Size + b.length
+
+			const nodes = tx.objectStore(NodeStoreName)
+			await req(() => nodes.put(node))
+
+			return node
+		})
+
+		this.isDirty = false
+
+		return o
+	}
+
+	write(p: io.Span): Promise<number | null> {
+		if (this.closed) return Promise.resolve(null)
+		return this.do(() => this.#write(p))
+	}
+
+	async #seek(offset: number, whence?: io.Seek): Promise<number> {
 		const b = await this.b
 		const end = Block.Size * this.node.blockIds.length + b.length
 
@@ -240,7 +330,7 @@ abstract class IdbFileBase {
 			this.q.push(next)
 		}
 
-		const next = await this.getNextBlock()
+		const next = await this.advanceBlock()
 		if (next === undefined) {
 			throw new Error('invalid state: next block must be exist')
 		}
@@ -249,10 +339,19 @@ abstract class IdbFileBase {
 		return o
 	}
 
+	seek(offset: number, whence?: io.Seek): Promise<number> {
+		if (this.closed) return Promise.reject(new Error('closed'))
+		return this.do(() => this.#seek(offset, whence))
+	}
+
 	protected abstract onClose(): Promise<void>
 
 	close(): Promise<void> {
-		if (this.closed) return Promise.resolve()
+		if (this.closed) {
+			return this.#op
+		}
+
+		this.closed = true
 		return this.do(() => this.onClose())
 	}
 
@@ -262,36 +361,6 @@ abstract class IdbFileBase {
 }
 
 class ReadOnlyIdbFile extends IdbFileBase implements File {
-	async #read(p: Span): Promise<number | null> {
-		let o = 0
-		while (o < p.length) {
-			const b = await this.b
-			if (b.available === 0) {
-				break
-			}
-
-			const n = await b.read(p.subbuff(o))
-			if (n === null) {
-				throw new Error('invalid state: content of block must be available')
-			}
-
-			o += n
-			if (b.available === 0) {
-				await this.getNextBlock()
-			}
-		}
-
-		if (o === 0) {
-			return null
-		}
-		return o
-	}
-
-	read(p: Span): Promise<number | null> {
-		if (this.closed) return Promise.resolve(null)
-		return this.do(() => this.#read(p))
-	}
-
 	write(p: Span): Promise<number | null> {
 		return Promise.reject(new Error('file is read only'))
 	}
@@ -320,68 +389,12 @@ class ReadOnlyIdbFile extends IdbFileBase implements File {
 	}
 }
 
-class IdbFile extends ReadOnlyIdbFile implements File {
-	async #write(p: Span): Promise<number> {
-		let o = 0
-		while (true) {
-			if (o >= p.length) {
-				return o
-			}
-
-			const b = await this.b
-			const n = await b.write(p.subbuff(o))
-			if (n === null) {
-				const next = await this.getNextBlock()
-				if (!next) {
-					break
-				}
-
-				continue
-			}
-
-			this.isDirty = true
-			o += n
-		}
-
-		// There is data remaining to be written and new blocks are needed.
-
-		const b = await this.b
-		const ds: Uint8Array[] = []
-		for (; o < p.length; o += Block.Size) {
-			ds.push(p.subbuff(o, o + Block.Size).data)
-		}
-
-		const tx = this.db.transaction([NodeStoreName, BlockStoreName], 'readwrite')
-		this.node = await exec(tx, async () => {
-			const blocks = tx.objectStore(BlockStoreName)
-			const ids = (await Promise.all(ds.slice().map(d => req(() => blocks.add(d))))) as number[]
-			if (this.isDirty) {
-				await req(() => blocks.put(b))
-			}
-
-			const node = structuredClone(this.node)
-			node.blockIds.push(...ids)
-			node.size = node.blockIds.length * Block.Size + b.length
-
-			const nodes = tx.objectStore(NodeStoreName)
-			await req(() => nodes.put(node))
-
-			return node
-		})
-
-		this.isDirty = false
-		return o
-	}
-
-	write(p: Span): Promise<number | null> {
-		if (this.closed) return Promise.resolve(null)
-		return this.do(() => this.#write(p))
-	}
-
+class IdbFile extends IdbFileBase implements File {
 	protected override async onClose(): Promise<void> {
 		const b = await this.b
 		const storeNames = [NodeStoreName]
-		if (this.isDirty) {
+		const needGrow = this.curr >= this.node.blockIds.length
+		if (this.isDirty || needGrow) {
 			storeNames.push(BlockStoreName)
 		}
 
@@ -393,9 +406,9 @@ class IdbFile extends ReadOnlyIdbFile implements File {
 			node.cntWriters--
 			node.size = node.blockIds.length * Block.Size + b.length
 
-			if (this.curr >= this.node.blockIds.length) {
+			if (needGrow) {
 				const blocks = tx.objectStore(BlockStoreName)
-				const id = (await req(() => blocks.put(b.data))) as number
+				const id = (await req(() => blocks.add(b.data))) as number
 				node.blockIds.push(id)
 				this.isDirty = false
 			}
@@ -407,7 +420,7 @@ class IdbFile extends ReadOnlyIdbFile implements File {
 			}
 
 			const blocks = tx.objectStore(BlockStoreName)
-			await req(() => blocks.put(b.data))
+			await req(() => blocks.put(b.data, node.blockIds[this.curr]))
 		})
 	}
 }
@@ -558,60 +571,51 @@ export class IdbFs implements Fs {
 	}
 
 	openFile(name: string, flag: OpenFlag, mode?: FileMode): Promise<File> {
-		const isRO = (flag & (OpenFlag.Append | OpenFlag.Write | OpenFlag.Trunc)) === 0
-		const atEnd = (flag & OpenFlag.AtEnd) > 0
+		if (flag === OpenFlag.Unspecified) {
+			flag = OpenFlag.Read
+		}
 
+		const wFlag = flag & (OpenFlag.Write | OpenFlag.Append | OpenFlag.Trunc)
 		const tx = this.db.transaction([NodeStoreName, BlockStoreName], 'readwrite')
-		return exec(tx, async () => {
+		return exec(tx, async (): Promise<File> => {
 			const nodes = tx.objectStore(NodeStoreName)
-			const { p, e, n } = await this.get(nodes, name)
-			switch (e?.type) {
-				case FileType.Directory: {
-					if (!isRO) {
-						throw new errs.ErrDirectory()
-					}
-
-					return new IdbDir(this.db, e, n)
+			const { p, e, n, r } = await this.get(nodes, name)
+			if (r !== '') {
+				throw new errs.ErrNotDirectory()
+			}
+			if (e?.type === FileType.Directory) {
+				if (wFlag > 0) {
+					throw new errs.ErrDirectory()
 				}
 
-				case FileType.RegularFile: {
-					if (e.cntWriters > 0) {
-						throw new errs.ErrBusy()
-					}
+				return new IdbDir(this.db, e, n)
+			}
+			if (!e && (flag & OpenFlag.Read) > 0) {
+				throw new errs.ErrNotExist()
+			}
+			if (!e || e.type === FileType.RegularFile) {
+				const atEnd = (flag & OpenFlag.AtEnd) > 0
 
-					e.cntReaders++
-					if (isRO) {
-						await req(() => nodes.put(e))
-						return new ReadOnlyIdbFile(this.db, e, n, atEnd)
+				let node = e
+				if (node) {
+					if (node.cntWriters > 0 && wFlag !== OpenFlag.Write) {
+						throw new errs.ErrBusy()
 					}
 
 					const x = OpenFlag.Write | OpenFlag.NoReplace
 					if ((flag & x) === x) {
 						throw new errs.ErrExist()
 					}
-					if ((flag & (OpenFlag.Append | OpenFlag.Trunc)) === 0) {
-						// TODO: Replace a file and return
-						throw new Error('not implemented')
-					}
 
-					if ((flag & OpenFlag.Trunc) > 0) {
-						// TODO: detach blocks
+					if (wFlag === 0) {
+						node.cntReaders++
+						await req(() => nodes.put(node))
+						return new ReadOnlyIdbFile(this.db, node, n, atEnd)
 					}
-
-					e.cntWriters++
-					await req(() => nodes.put(e))
-					if ((flag & OpenFlag.Append) > 0) {
-						return new AppendOnlyIdbFile(this.db, e, n)
-					}
-
-					return new IdbFile(this.db, e, n, atEnd)
 				}
 
-				case undefined: {
-					if (isRO) {
-						throw new errs.ErrNotExist()
-					}
-
+				if (!node || (flag & (OpenFlag.Read | OpenFlag.Append | OpenFlag.Trunc)) === 0) {
+					// create a new file or replace existing one
 					const nodeInput: NodeInput<FileNode> = {
 						numLink: 1,
 						mode: mode ?? (0o755 as FileMode),
@@ -624,17 +628,30 @@ export class IdbFs implements Fs {
 					}
 
 					const id = (await req(() => nodes.add(nodeInput))) as number
-					const node: FileNode = { id, ...nodeInput }
+					node = { id, ...nodeInput }
 					p.entries[n] = id
 					await req(() => nodes.put(p))
-
-					const f = new IdbFile(this.db, node, n, atEnd)
-					return f
+				} else {
+					// open existing file.
+					node.cntReaders++
+					node.cntWriters++
+					if ((flag & OpenFlag.Trunc) > 0) {
+						const blocks = tx.objectStore(BlockStoreName)
+						const node_ = node
+						await req(() => blocks.delete(node_.blockIds))
+						node.blockIds = []
+					}
+					await req(() => nodes.put(node))
 				}
 
-				default:
-					throw new Error('unknown type of file')
+				if ((flag & OpenFlag.Append) > 0) {
+					return new AppendOnlyIdbFile(this.db, node, n)
+				}
+
+				return new IdbFile(this.db, node, n, atEnd)
 			}
+
+			throw new Error('invalid state: unknown type of node')
 		})
 	}
 
@@ -849,6 +866,19 @@ export class IdbFs implements Fs {
 						isDir: true,
 					}
 		})
+	}
+
+	link(oldname: string, newname: string): Promise<void> {
+		throw new Error('Method not implemented.')
+	}
+	symlink(oldname: string, newname: string): Promise<void> {
+		throw new Error('Method not implemented.')
+	}
+	lstat(name: string): Promise<FileInfo> {
+		throw new Error('Method not implemented.')
+	}
+	readLink(name: string): Promise<string> {
+		throw new Error('Method not implemented.')
 	}
 
 	delete() {
