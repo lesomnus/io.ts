@@ -41,49 +41,64 @@ class SubFs implements Fs {
 		this.fixErr(err)
 	}
 
-	open(name: string): Promise<ReadOnlyFile> {
+	private handle<T>(op: Promise<T>): Promise<T> {
+		return op.catch(this.handleErr.bind(this))
+	}
+
+	lstat(name: string): Promise<FileInfo> {
 		const full = this.fullName('open', name)
-		return this.fsys.open(full).catch(this.handleErr.bind(this))
+		return this.handle(this.fsys.lstat(full))
+	}
+	stat(name: string): Promise<FileInfo> {
+		const full = this.fullName('open', name)
+		return this.handle(this.fsys.stat(full))
 	}
 
 	openFile(name: string, flag: OpenFlag, mode: FileMode): Promise<File> {
 		const full = this.fullName('open', name)
-		return this.fsys.openFile(full, flag, mode).catch(this.handleErr.bind(this))
+		return this.handle(this.fsys.openFile(full, flag, mode))
 	}
-
+	open(name: string): Promise<ReadOnlyFile> {
+		const full = this.fullName('open', name)
+		return this.handle(this.fsys.open(full))
+	}
+	create(name: string): Promise<File> {
+		const full = this.fullName('create', name)
+		return this.handle(this.fsys.create(full))
+	}
+	mkdir(name: string, mode: FileMode): Promise<void> {
+		const full = this.fullName('mkdir', name)
+		return this.handle(this.fsys.mkdir(full, mode))
+	}
+	mkdirAll(name: string, mode: FileMode): Promise<void> {
+		const full = this.fullName('mkdirAll', name)
+		return this.handle(this.fsys.mkdirAll(full, mode))
+	}
 	async *readDir(name: string): AsyncIterable<DirEntry> {
 		yield* this.fsys.readDir(name)
 	}
-
-	create(name: string): Promise<File> {
-		const full = this.fullName('create', name)
-		return this.fsys.create(full).catch(this.handleErr.bind(this))
-	}
-
-	mkdir(name: string, mode: FileMode): Promise<void> {
-		const full = this.fullName('mkdir', name)
-		return this.fsys.mkdir(full, mode).catch(this.handleErr.bind(this))
-	}
-
-	mkdirAll(name: string, mode: FileMode): Promise<void> {
-		const full = this.fullName('mkdirAll', name)
-		return this.fsys.mkdirAll(full, mode).catch(this.handleErr.bind(this))
-	}
-
 	rename(oldname: string, newname: string): Promise<void> {
 		const oldfull = this.fullName('rename', oldname)
 		const newfull = this.fullName('rename', newname)
-		return this.fsys.rename(oldfull, newfull).catch(this.handleErr.bind(this))
+		return this.handle(this.fsys.rename(oldfull, newfull))
 	}
-
 	remove(name: string): Promise<void> {
 		const full = this.fullName('remove', name)
-		return this.fsys.remove(full).catch(this.handleErr.bind(this))
+		return this.handle(this.fsys.remove(full))
 	}
-
-	stat(name: string): Promise<FileInfo> {
-		const full = this.fullName('open', name)
-		return this.fsys.stat(full).catch(this.handleErr.bind(this))
+	link(oldname: string, newname: string): Promise<void> {
+		const oldfull = this.fullName('rename', oldname)
+		const newfull = this.fullName('rename', newname)
+		return this.handle(this.fsys.link(oldfull, newfull))
+	}
+	symlink(oldname: string, newname: string): Promise<void> {
+		const oldfull = this.fullName('rename', oldname)
+		const newfull = this.fullName('rename', newname)
+		return this.handle(this.fsys.symlink(oldfull, newfull))
+	}
+	readLink(name: string): Promise<string> {
+		const full = this.fullName('readLink', name)
+		return this.handle(this.fsys.readLink(full))
 	}
 }
 
